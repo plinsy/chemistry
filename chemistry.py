@@ -3,9 +3,15 @@ import networkx as nx
 from networkx.algorithms import isomorphism
 from rdkit import Chem
 from rdkit.Chem import AllChem
+import matplotlib
+
+matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import tkinter as tk
+from tkinter import ttk
 
 # Creer notre dictionnaire
 ELEMENTS_VALENCE = {
@@ -13,6 +19,8 @@ ELEMENTS_VALENCE = {
     "H": {"valence": 1, "color": "#FFFFFF"},  # Hydrogène : Blanc
     "C": {"valence": 4, "color": "#FF0D0D"},  # Carbone : Rouge
 }
+
+VISUALISER_EN_3D = True
 
 
 def calculer_insaturation(carbone, hydrogene, azote=0, halogene=0):
@@ -79,18 +87,6 @@ def verifier_valences(graphe):
 
     print("✅ Structure valide selon les règles de valence.")
     return True
-
-
-# def sont_identiques(mol1, mol2):
-#     # On définit ce qui rend deux nœuds identiques (ici, l'élément chimique)
-#     def node_match(n1, n2):
-#         return n1["element"] == n2["element"]
-
-#     # On définit ce qui rend deux liaisons identiques (le type : simple, double...)
-#     def edge_match(e1, e2):
-#         return e1["type_liaison"] == e2["type_liaison"]
-
-#     return nx.is_isomorphic(mol1, mol2, node_match=node_match, edge_match=edge_match)
 
 
 def obtenir_smiles_canonique(graphe_networkx):
@@ -196,7 +192,7 @@ def smiles_vers_graphe(smiles):
 
 
 def visualiser_molecules(liste_smiles, formule_brute, max_isomers=20):
-    """Affiche toutes les structures possibles pour une formule (chaque isomère dans une figure séparée)"""
+    """Affiche toutes les structures possibles dans une fenêtre scrollable avec 2 colonnes"""
     n_molecules = len(liste_smiles)
 
     if n_molecules == 0:
@@ -213,8 +209,55 @@ def visualiser_molecules(liste_smiles, formule_brute, max_isomers=20):
 
     print(f"\n🖼️  Génération de {n_molecules} images...")
 
+    # Calculer le nombre de lignes et colonnes pour la grille (2 colonnes)
+    n_cols = 2
+    n_rows = (n_molecules + n_cols - 1) // n_cols  # Arrondi supérieur
+
+    # Créer une fenêtre tkinter avec scrollbar
+    root = tk.Tk()
+    root.title(f"{formule_brute} - {n_molecules} Isomères")
+
+    # Créer un frame principal avec scrollbar
+    main_frame = ttk.Frame(root)
+    main_frame.pack(fill=tk.BOTH, expand=1)
+
+    # Créer un canvas
+    canvas = tk.Canvas(main_frame, width=900, height=700)
+    canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=1)
+
+    # Ajouter scrollbar verticale
+    scrollbar = ttk.Scrollbar(main_frame, orient=tk.VERTICAL, command=canvas.yview)
+    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+    # Configurer le canvas
+    canvas.configure(yscrollcommand=scrollbar.set)
+    canvas.bind(
+        "<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+    )
+
+    # Créer un frame dans le canvas
+    second_frame = ttk.Frame(canvas)
+    canvas.create_window((0, 0), window=second_frame, anchor="nw")
+
+    # Créer la figure matplotlib
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(12, 5 * n_rows))
+    fig.suptitle(
+        f"{formule_brute} - {n_molecules} Isomères", fontsize=16, fontweight="bold"
+    )
+
+    # S'assurer que axes est toujours un tableau 2D
+    if n_molecules == 1:
+        axes = np.array([[axes, axes]])
+    elif n_rows == 1:
+        axes = axes.reshape(1, -1)
+
     for idx, smiles in enumerate(liste_smiles):
         print(f"  [{idx+1}/{n_molecules}] Création de l'isomère {idx+1}...", end="\r")
+
+        row = idx // n_cols
+        col = idx % n_cols
+        ax = axes[row, col]
+
         graphe = smiles_vers_graphe(smiles)
 
         # Extraire les couleurs basées sur les éléments
@@ -226,9 +269,8 @@ def visualiser_molecules(liste_smiles, formule_brute, max_isomers=20):
         # Créer les labels avec symboles atomiques
         labels = {node: graphe.nodes[node]["element"] for node in graphe.nodes}
 
-        # Créer une nouvelle figure pour chaque isomère
-        fig, ax = plt.subplots(figsize=(8, 8))
-        pos = nx.spring_layout(graphe)
+        # Dessiner le graphe dans le subplot
+        pos = nx.spring_layout(graphe, seed=42)
         nx.draw(
             graphe,
             pos,
@@ -242,25 +284,40 @@ def visualiser_molecules(liste_smiles, formule_brute, max_isomers=20):
             linewidths=2,
             ax=ax,
         )
-        ax.set_title(
-            f"{formule_brute} - Isomère {idx+1}\n{smiles}",
-            fontsize=12,
-            fontweight="bold",
-        )
-        plt.tight_layout()
-        plt.show(
-            block=False
-        )  # Non-bloquant: toutes les fenêtres apparaissent en même temps
+        ax.set_title(f"Isomère {idx+1}\n{smiles}", fontsize=10, fontweight="bold")
+        ax.axis("off")
 
-    print(f"\n✅ {n_molecules} images créées!")
-    print("Fermez toutes les fenêtres pour continuer...")
-    plt.show()  # Bloque jusqu'à ce que toutes les fenêtres soient fermées
+    # Cacher les subplots vides
+    for idx in range(n_molecules, n_rows * n_cols):
+        row = idx // n_cols
+        col = idx % n_cols
+        axes[row, col].axis("off")
+
+    plt.tight_layout()
+
+    # Intégrer matplotlib dans tkinter
+    canvas_widget = FigureCanvasTkAgg(fig, master=second_frame)
+    canvas_widget.draw()
+    canvas_widget.get_tk_widget().pack()
+
+    # Mettre à jour le canvas pour le scroll
+    second_frame.update_idletasks()
+    canvas.configure(scrollregion=canvas.bbox("all"))
+
+    # Activer le scroll avec la molette de souris
+    def _on_mousewheel(event):
+        canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+    print(f"\n✅ {n_molecules} images créées dans une fenêtre scrollable!")
+    root.mainloop()
 
 
 def visualiser_molecules_3d(
     liste_smiles, formule_brute, max_isomers=20, optimize=False
 ):
-    """Affiche toutes les structures possibles en 3D (chaque isomère dans une figure séparée)"""
+    """Affiche toutes les structures possibles en 3D dans une fenêtre scrollable avec 2 colonnes"""
     n_molecules = len(liste_smiles)
 
     if n_molecules == 0:
@@ -284,8 +341,47 @@ def visualiser_molecules_3d(
             f"\n🔬 Génération de {n_molecules} structures 3D rapide (sans optimisation)..."
         )
 
+    # Calculer le nombre de lignes et colonnes pour la grille (2 colonnes)
+    n_cols = 2
+    n_rows = (n_molecules + n_cols - 1) // n_cols  # Arrondi supérieur
+
+    # Créer une fenêtre tkinter avec scrollbar
+    root = tk.Tk()
+    root.title(f"{formule_brute} - {n_molecules} Isomères (3D)")
+
+    # Créer un frame principal avec scrollbar
+    main_frame = ttk.Frame(root)
+    main_frame.pack(fill=tk.BOTH, expand=1)
+
+    # Créer un canvas
+    canvas = tk.Canvas(main_frame, width=1000, height=700)
+    canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=1)
+
+    # Ajouter scrollbar verticale
+    scrollbar = ttk.Scrollbar(main_frame, orient=tk.VERTICAL, command=canvas.yview)
+    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+    # Configurer le canvas
+    canvas.configure(yscrollcommand=scrollbar.set)
+    canvas.bind(
+        "<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+    )
+
+    # Créer un frame dans le canvas
+    second_frame = ttk.Frame(canvas)
+    canvas.create_window((0, 0), window=second_frame, anchor="nw")
+
+    # Créer la figure matplotlib 3D
+    fig = plt.figure(figsize=(14, 6 * n_rows))
+    fig.suptitle(
+        f"{formule_brute} - {n_molecules} Isomères (3D)", fontsize=16, fontweight="bold"
+    )
+
     for idx, smiles in enumerate(liste_smiles):
         print(f"  [{idx+1}/{n_molecules}] Création de l'isomère {idx+1}...", end="\r")
+
+        # Créer un subplot 3D
+        ax = fig.add_subplot(n_rows, n_cols, idx + 1, projection="3d")
 
         # Créer la molécule et ajouter les hydrogènes
         mol = Chem.MolFromSmiles(smiles)
@@ -300,10 +396,6 @@ def visualiser_molecules_3d(
 
         # Obtenir les coordonnées 3D
         conf = mol.GetConformer()
-
-        # Créer une nouvelle figure pour chaque isomère
-        fig = plt.figure(figsize=(10, 10))
-        ax = fig.add_subplot(111, projection="3d")
 
         # Extraire les positions et couleurs des atomes
         for atom in mol.GetAtoms():
@@ -348,26 +440,33 @@ def visualiser_molecules_3d(
                 linewidth=2,
             )
 
-        ax.set_xlabel("X")
-        ax.set_ylabel("Y")
-        ax.set_zlabel("Z")
-        ax.set_title(
-            f"{formule_brute} - Isomère {idx+1}\n{smiles}",
-            fontsize=12,
-            fontweight="bold",
-        )
+        ax.set_xlabel("X", fontsize=8)
+        ax.set_ylabel("Y", fontsize=8)
+        ax.set_zlabel("Z", fontsize=8)
+        ax.set_title(f"Isomère {idx+1}\n{smiles}", fontsize=10, fontweight="bold")
 
         # Désactiver la grille pour un meilleur rendu
         ax.grid(True, alpha=0.3)
 
-        plt.tight_layout()
-        plt.show(
-            block=False
-        )  # Non-bloquant: toutes les fenêtres apparaissent en même temps
+    plt.tight_layout()
 
-    print(f"\n✅ {n_molecules} structures 3D créées!")
-    print("Fermez toutes les fenêtres pour continuer...")
-    plt.show()  # Bloque jusqu'à ce que toutes les fenêtres soient fermées
+    # Intégrer matplotlib dans tkinter
+    canvas_widget = FigureCanvasTkAgg(fig, master=second_frame)
+    canvas_widget.draw()
+    canvas_widget.get_tk_widget().pack()
+
+    # Mettre à jour le canvas pour le scroll
+    second_frame.update_idletasks()
+    canvas.configure(scrollregion=canvas.bbox("all"))
+
+    # Activer le scroll avec la molette de souris
+    def _on_mousewheel(event):
+        canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+    print(f"\n✅ {n_molecules} structures 3D créées dans une fenêtre scrollable!")
+    root.mainloop()
 
 
 def analyser_entree_utilisateur():
@@ -410,9 +509,15 @@ def analyser_entree_utilisateur():
 
         # Visualiser toutes les structures en 3D (rapide par défaut)
         # Pour une optimisation géométrique complète (plus lent), utilisez: optimize=True
-        visualiser_molecules_3d(
-            resultats, formule_brute, max_isomers=20, optimize=False
-        )
+        if VISUALISER_EN_3D:
+            visualiser_molecules_3d(
+                resultats, formule_brute, max_isomers=20, optimize=False
+            )
+        else:
+            visualiser_molecules(
+                resultats,
+                formule_brute,
+            )
 
     except Exception as e:
         print(f"Erreur lors de l'analyse : {e}")
