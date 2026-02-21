@@ -1,5 +1,8 @@
+from chemistry import analyser_entree_utilisateur
+
+
 def main():
-    print("Hello from chemistry!")
+    analyser_entree_utilisateur()
 
 
 if __name__ == "__main__":
