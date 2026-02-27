@@ -20,7 +20,7 @@ ELEMENTS_VALENCE = {
     "C": {"valence": 4, "color": "#FF0D0D"},  # Carbone : Rouge
 }
 
-VISUALISER_EN_3D = True
+VISUALISER_EN_3D = False
 
 
 def calculer_insaturation(carbone, hydrogene, azote=0, halogene=0):
@@ -192,7 +192,7 @@ def smiles_vers_graphe(smiles):
 
 
 def visualiser_molecules(liste_smiles, formule_brute, max_isomers=20):
-    """Affiche toutes les structures possibles dans une fenêtre scrollable avec 2 colonnes"""
+    """Affiche toutes les structures possibles dans une fenêtre scrollable avec 2 colonnes (interactive)"""
     n_molecules = len(liste_smiles)
 
     if n_molecules == 0:
@@ -207,7 +207,7 @@ def visualiser_molecules(liste_smiles, formule_brute, max_isomers=20):
         liste_smiles = liste_smiles[:max_isomers]
         n_molecules = max_isomers
 
-    print(f"\n🖼️  Génération de {n_molecules} images...")
+    print(f"\n🖼️  Génération de {n_molecules} images interactives...")
 
     # Calculer le nombre de lignes et colonnes pour la grille (2 colonnes)
     n_cols = 2
@@ -215,7 +215,7 @@ def visualiser_molecules(liste_smiles, formule_brute, max_isomers=20):
 
     # Créer une fenêtre tkinter avec scrollbar
     root = tk.Tk()
-    root.title(f"{formule_brute} - {n_molecules} Isomères")
+    root.title(f"{formule_brute} - {n_molecules} Isomères (Interactive)")
 
     # Créer un frame principal avec scrollbar
     main_frame = ttk.Frame(root)
@@ -242,7 +242,9 @@ def visualiser_molecules(liste_smiles, formule_brute, max_isomers=20):
     # Créer la figure matplotlib
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(12, 5 * n_rows))
     fig.suptitle(
-        f"{formule_brute} - {n_molecules} Isomères", fontsize=16, fontweight="bold"
+        f"{formule_brute} - {n_molecules} Isomères (Drag & Drop)",
+        fontsize=16,
+        fontweight="bold",
     )
 
     # S'assurer que axes est toujours un tableau 2D
@@ -250,6 +252,9 @@ def visualiser_molecules(liste_smiles, formule_brute, max_isomers=20):
         axes = np.array([[axes, axes]])
     elif n_rows == 1:
         axes = axes.reshape(1, -1)
+
+    # Stocker les données pour l'interactivité
+    graph_data = []
 
     for idx, smiles in enumerate(liste_smiles):
         print(f"  [{idx+1}/{n_molecules}] Création de l'isomère {idx+1}...", end="\r")
@@ -271,6 +276,21 @@ def visualiser_molecules(liste_smiles, formule_brute, max_isomers=20):
 
         # Dessiner le graphe dans le subplot
         pos = nx.spring_layout(graphe, seed=42)
+
+        # Stocker les données pour l'interactivité
+        graph_data.append(
+            {
+                "ax": ax,
+                "graphe": graphe,
+                "pos": pos,
+                "couleurs": couleurs,
+                "labels": labels,
+                "selected_node": None,
+                "smiles": smiles,
+                "idx": idx,
+            }
+        )
+
         nx.draw(
             graphe,
             pos,
@@ -295,6 +315,100 @@ def visualiser_molecules(liste_smiles, formule_brute, max_isomers=20):
 
     plt.tight_layout()
 
+    # Variables pour le drag and drop
+    drag_state = {"dragging": False, "graph_idx": None, "node": None}
+
+    def find_nearest_node(event, gdata):
+        """Trouve le nœud le plus proche du clic"""
+        if event.inaxes != gdata["ax"]:
+            return None
+
+        # Convertir les coordonnées du clic en coordonnées du graphe
+        min_dist = float("inf")
+        nearest_node = None
+
+        for node, (x, y) in gdata["pos"].items():
+            # Distance entre le clic et le nœud
+            dist = np.sqrt((x - event.xdata) ** 2 + (y - event.ydata) ** 2)
+            if dist < min_dist and dist < 0.1:  # Seuil de distance
+                min_dist = dist
+                nearest_node = node
+
+        return nearest_node
+
+    def on_press(event):
+        """Gère le clic de souris"""
+        if event.inaxes is None:
+            return
+
+        # Trouver quel graphe est cliqué
+        for idx, gdata in enumerate(graph_data):
+            node = find_nearest_node(event, gdata)
+            if node is not None:
+                drag_state["dragging"] = True
+                drag_state["graph_idx"] = idx
+                drag_state["node"] = node
+                break
+
+    def on_motion(event):
+        """Gère le mouvement de la souris pendant le drag"""
+        if not drag_state["dragging"] or event.inaxes is None:
+            return
+
+        gdata = graph_data[drag_state["graph_idx"]]
+
+        if event.inaxes != gdata["ax"]:
+            return
+
+        node = drag_state["node"]
+
+        # Mettre à jour la position du nœud
+        old_pos = gdata["pos"][node].copy()
+        gdata["pos"][node] = np.array([event.xdata, event.ydata])
+
+        # Déplacer les nœuds connectés (hydrogènes) de manière fluide
+        for neighbor in gdata["graphe"].neighbors(node):
+            # Si c'est un hydrogène, le déplacer avec le carbone
+            if gdata["graphe"].nodes[neighbor]["element"] == "H":
+                # Calculer le déplacement relatif
+                delta = gdata["pos"][node] - old_pos
+                gdata["pos"][neighbor] = gdata["pos"][neighbor] + delta
+
+        # Redessiner le graphe
+        gdata["ax"].clear()
+        nx.draw(
+            gdata["graphe"],
+            gdata["pos"],
+            labels=gdata["labels"],
+            node_color=gdata["couleurs"],
+            node_size=800,
+            font_color="white",
+            font_weight="bold",
+            with_labels=True,
+            edgecolors="black",
+            linewidths=2,
+            ax=gdata["ax"],
+        )
+        gdata["ax"].set_title(
+            f"Isomère {gdata['idx']+1}\n{gdata['smiles']}",
+            fontsize=10,
+            fontweight="bold",
+        )
+        gdata["ax"].axis("off")
+
+        canvas_widget.draw_idle()
+
+    def on_release(event):
+        """Gère le relâchement de la souris"""
+        drag_state["dragging"] = False
+        drag_state["graph_idx"] = None
+        drag_state["node"] = None
+
+    # Connecter les événements
+    fig.canvas.mpl_connect("button_press_event", on_press)
+    fig.canvas.mpl_connect("motion_notify_event", on_motion)
+    fig.canvas.mpl_connect("button_release_event", on_release)
+
     # Intégrer matplotlib dans tkinter
     canvas_widget = FigureCanvasTkAgg(fig, master=second_frame)
     canvas_widget.draw()
@@ -310,7 +424,7 @@ def visualiser_molecules(liste_smiles, formule_brute, max_isomers=20):
 
     canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
-    print(f"\n✅ {n_molecules} images créées dans une fenêtre scrollable!")
+    print(f"\n✅ {n_molecules} images interactives créées! Glissez-déposez les atomes!")
     root.mainloop()
 
 
