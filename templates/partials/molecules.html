@@ -1,0 +1,328 @@
+<div class="molecules-container">
+  <h3>
+    Found {{ isomers|length }} Isomer{{ 's' if isomers|length != 1 else '' }}
+  </h3>
+  <div class="isomers-grid">
+    {% for isomer in isomers %}
+    <div class="isomer-card">
+      <h4>Isomer {{ loop.index }}</h4>
+      <div class="smiles-code">{{ isomer.smiles }}</div>
+      <div
+        id="molecule-{{ loop.index }}"
+        class="molecule-viewer"
+        data-smiles="{{ isomer.smiles }}"
+        data-atoms='{{ isomer.atoms|tojson }}'
+        data-bonds='{{ isomer.bonds|tojson }}'></div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+<script>
+  // Color mapping for atoms (CPK coloring)
+  const atomColors = {
+    C: 0x909090, // Carbon - Gray
+    H: 0xffffff, // Hydrogen - White
+    O: 0xff0d0d, // Oxygen - Red
+    N: 0x3050f8, // Nitrogen - Blue
+    S: 0xffff30, // Sulfur - Yellow
+    P: 0xff8000  // Phosphorus - Orange
+  }
+
+  const atomRadii = {
+    C: 0.7,
+    H: 0.3,  // Smaller for hydrogen
+    O: 0.66,
+    N: 0.65,
+    S: 1.0,
+    P: 1.0
+  }
+
+  // Simple SMILES parser for basic visualization
+  function parseSMILES(smiles) {
+    const atoms = []
+    const bonds = []
+    let currentIndex = 0
+    let branchStack = []
+    let lastMainChainIndex = -1
+
+    // Parse SMILES notation (hydrogens are implicit, not shown)
+    for (let i = 0; i < smiles.length; i++) {
+      const char = smiles[i]
+
+      // Handle atoms (C, N, O, etc.) - skip H as it's typically implicit
+      if (char === 'C' || char === 'O' || char === 'N' || char === 'S' || char === 'P') {
+        atoms.push({ element: char, index: currentIndex })
+
+        // Create bond to previous atom
+        if (branchStack.length === 0) {
+          // Main chain: connect to previous atom in main chain
+          if (lastMainChainIndex >= 0) {
+            bonds.push([lastMainChainIndex, currentIndex])
+          }
+          lastMainChainIndex = currentIndex
+        } else {
+          // In a branch: connect to the branch point (top of stack)
+          bonds.push([branchStack[branchStack.length - 1], currentIndex])
+        }
+
+        currentIndex++
+      } else if (char === '(') {
+        // Start a new branch from the last main chain atom
+        branchStack.push(lastMainChainIndex)
+      } else if (char === ')') {
+        // End the current branch and return to main chain
+        branchStack.pop()
+      } else if (char === '=' || char === '#') {
+        // Double or triple bonds - just skip for now in visualization
+        // Could be enhanced to show different bond types
+        continue
+      }
+      // Numbers (ring closures) and other SMILES features can be added here
+    }
+
+    return { atoms, bonds }
+  }
+
+  // Create 3D molecule visualization
+  function createMoleculeViewer(containerId, smiles, atomsData, bondsData) {
+    const container = document.getElementById(containerId)
+    if (!container) return
+
+    const width = container.clientWidth
+    const height = 300
+
+    // Setup scene
+    const scene = new THREE.Scene()
+    scene.background = new THREE.Color(0xffffff)
+
+    // Setup camera
+    const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000)
+    camera.position.z = 10
+
+    // Setup renderer
+    const renderer = new THREE.WebGLRenderer({ antialias: true })
+    renderer.setSize(width, height)
+    container.appendChild(renderer.domElement)
+
+    // Setup controls
+    const controls = new THREE.OrbitControls(camera, renderer.domElement)
+    controls.enableDamping = true
+    controls.dampingFactor = 0.05
+
+    // Add lights
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5)
+    scene.add(ambientLight)
+
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8)
+    directionalLight.position.set(5, 5, 5)
+    scene.add(directionalLight)
+
+    // Use backend-provided 3D coordinates or fallback to SMILES parsing
+    let atoms, bonds, positions
+
+    if (atomsData && atomsData.length > 0) {
+      // Use backend-provided data with real 3D coordinates
+      atoms = atomsData.map((atom, i) => ({ element: atom.element, index: i }))
+      positions = atomsData.map(atom => ({ x: atom.x, y: atom.y, z: atom.z }))
+      bonds = bondsData || []
+    } else {
+      // Fallback to SMILES parsing (legacy)
+      const parsed = parseSMILES(smiles)
+      atoms = parsed.atoms
+      bonds = parsed.bonds
+
+      // Generate simple 3D positions
+      const angleStep = (2 * Math.PI) / atoms.length
+      const radius = Math.max(3, atoms.length * 0.5)
+
+      positions = atoms.map((atom, i) => {
+        const angle = i * angleStep
+        return {
+          x: radius * Math.cos(angle),
+          y: radius * Math.sin(angle) * 0.5,
+          z: (Math.random() - 0.5) * 2
+        }
+      })
+    }
+
+    // Create atoms
+    atoms.forEach((atom, i) => {
+      const geometry = new THREE.SphereGeometry(
+        atomRadii[atom.element] || 0.5,
+        32,
+        32
+      )
+      const material = new THREE.MeshPhongMaterial({
+        color: atomColors[atom.element] || 0x808080,
+        shininess: 30
+      })
+      const sphere = new THREE.Mesh(geometry, material)
+      sphere.position.set(positions[i].x, positions[i].y, positions[i].z)
+      scene.add(sphere)
+
+      // Add atom label (skip for hydrogen to reduce clutter)
+      if (atom.element !== 'H') {
+        // const canvas = document.createElement('canvas')
+        // const context = canvas.getContext('2d')
+        // canvas.width = 64
+        // canvas.height = 64
+        // context.fillStyle = '#000000'
+        // context.font = 'Bold 48px Arial'
+        // context.textAlign = 'center'
+        // context.textBaseline = 'middle'
+        // context.fillText(atom.element, 32, 32)
+
+        // const texture = new THREE.CanvasTexture(canvas)
+        // const spriteMaterial = new THREE.SpriteMaterial({ map: texture })
+        // const sprite = new THREE.Sprite(spriteMaterial)
+        // sprite.position.set(positions[i].x, positions[i].y + 1, positions[i].z)
+        // sprite.scale.set(1, 1, 1)
+        // scene.add(sprite)
+      }
+    })
+
+    // Create bonds
+    bonds.forEach((bond) => {
+      // Handle both array format [start, end] and object format {start, end, type}
+      const start = Array.isArray(bond) ? bond[0] : bond.start
+      const end = Array.isArray(bond) ? bond[1] : bond.end
+      
+      if (start < positions.length && end < positions.length) {
+        const material = new THREE.LineBasicMaterial({
+          color: 0x000000,
+          linewidth: 2
+        })
+        const points = []
+        points.push(
+          new THREE.Vector3(
+            positions[start].x,
+            positions[start].y,
+            positions[start].z
+          )
+        )
+        points.push(
+          new THREE.Vector3(
+            positions[end].x,
+            positions[end].y,
+            positions[end].z
+          )
+        )
+        const geometry = new THREE.BufferGeometry().setFromPoints(points)
+        const line = new THREE.Line(geometry, material)
+        scene.add(line)
+      }
+    })
+
+    // Animation loop
+    function animate() {
+      requestAnimationFrame(animate)
+      controls.update()
+      renderer.render(scene, camera)
+    }
+    animate()
+
+    // Handle resize
+    window.addEventListener('resize', () => {
+      const newWidth = container.clientWidth
+      camera.aspect = newWidth / height
+      camera.updateProjectionMatrix()
+      renderer.setSize(newWidth, height)
+    })
+  }
+
+  // Initialize all molecule viewers
+  window.addEventListener('load', function () {
+    // Ensure THREE is loaded
+    if (typeof THREE !== 'undefined') {
+      initializeMolecules()
+    } else {
+      console.error('THREE.js failed to load')
+    }
+  })
+
+  // Also initialize when loaded via HTMX
+  document.body.addEventListener('htmx:afterSettle', function (event) {
+    if (typeof THREE !== 'undefined') {
+      initializeMolecules()
+    }
+  })
+
+  function initializeMolecules() {
+    document.querySelectorAll('.molecule-viewer').forEach((container) => {
+      if (!container.hasChildNodes()) {
+        const smiles = container.dataset.smiles
+        const atomsData = container.dataset.atoms ? JSON.parse(container.dataset.atoms) : []
+        const bondsData = container.dataset.bonds ? JSON.parse(container.dataset.bonds) : []
+        createMoleculeViewer(container.id, smiles, atomsData, bondsData)
+      }
+    })
+  }
+
+  // Expose functions globally for HTMX compatibility
+  window.initializeMolecules = initializeMolecules
+</script>
+
+<style>
+  .molecules-container {
+    padding: 2rem;
+    background: white;
+    border-radius: 8px;
+    margin-top: 2rem;
+  }
+
+  .molecules-container h3 {
+    color: #333;
+    margin-bottom: 1.5rem;
+    text-align: center;
+  }
+
+  .isomers-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    gap: 2rem;
+    margin-top: 1rem;
+  }
+
+  .isomer-card {
+    background: #f9f9f9;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 1rem;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+  }
+
+  .isomer-card h4 {
+    margin-top: 0;
+    color: #4caf50;
+    text-align: center;
+  }
+
+  .smiles-code {
+    font-family: 'Courier New', monospace;
+    background: #fff;
+    padding: 0.5rem;
+    border-radius: 4px;
+    margin-bottom: 1rem;
+    text-align: center;
+    font-size: 0.9rem;
+    color: #666;
+    border: 1px solid #e0e0e0;
+  }
+
+  .molecule-viewer {
+    width: 100%;
+    height: 300px;
+    border-radius: 4px;
+    overflow: hidden;
+    background: #ffffff;
+    border: 1px solid #e0e0e0;
+  }
+
+  .molecule-viewer canvas {
+    display: block;
+  }
+</style>

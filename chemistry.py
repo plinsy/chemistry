@@ -12,6 +12,14 @@ import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import tkinter as tk
 from tkinter import ttk
+from rich.progress import (
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    BarColumn,
+    TaskProgressColumn,
+    TimeRemainingColumn,
+)
 
 # Creer notre dictionnaire
 ELEMENTS_VALENCE = {
@@ -81,11 +89,11 @@ def verifier_valences(graphe):
 
         if liaisons_actuelles > valence_max:
             print(
-                f"❌ Erreur : L'atome {node_id} ({element}) a {liaisons_actuelles} liaisons (Max: {valence_max})"
+                f"Erreur : L'atome {node_id} ({element}) a {liaisons_actuelles} liaisons (Max: {valence_max})"
             )
             return False
 
-    print("✅ Structure valide selon les règles de valence.")
+    print("Structure valide selon les règles de valence.")
     return True
 
 
@@ -113,55 +121,232 @@ def obtenir_smiles_canonique(graphe_networkx):
     return Chem.MolToSmiles(mol, isomericSmiles=True)
 
 
-def generer_tous_squelettes(n_carbones):
+def generer_tous_squelettes(n_carbones, n_hydrogenes=None):
+    """
+    Génère tous les isomères possibles pour une formule CnHm.
+    Si n_hydrogenes est None, génère uniquement les alcanes saturés.
+    Sinon, génère toutes les structures (alkènes, alkines, cycles) correspondant à CnHm.
+    """
     # On utilise un set pour stocker les chaînes SMILES (élimination auto des doublons)
     smiles_uniques = set()
+    progress_tracker = {"count": 0, "task": None}
 
-    def convertir_en_smiles(graphe):
-        """Transforme le graphe NetworkX en SMILES canonique via RDKit"""
-        rw_mol = Chem.RWMol()
-        node_to_idx = {}
+    def convertir_en_smiles_avec_liaisons(graphe):
+        """Transforme le graphe NetworkX (avec types de liaisons) en SMILES canonique"""
+        try:
+            rw_mol = Chem.RWMol()
+            node_to_idx = {}
+
+            # Ajouter les atomes de carbone
+            for node in graphe.nodes:
+                idx = rw_mol.AddAtom(Chem.Atom("C"))
+                node_to_idx[node] = idx
+
+            # Ajouter les liaisons avec leur type
+            for u, v, data in graphe.edges(data=True):
+                bond_type = data.get("type_liaison", 1)
+                if bond_type == 1:
+                    rw_mol.AddBond(node_to_idx[u], node_to_idx[v], Chem.BondType.SINGLE)
+                elif bond_type == 2:
+                    rw_mol.AddBond(node_to_idx[u], node_to_idx[v], Chem.BondType.DOUBLE)
+                elif bond_type == 3:
+                    rw_mol.AddBond(node_to_idx[u], node_to_idx[v], Chem.BondType.TRIPLE)
+
+            mol = rw_mol.GetMol()
+            Chem.SanitizeMol(mol)
+
+            # Vérifier le nombre d'hydrogènes si spécifié
+            if n_hydrogenes is not None:
+                mol_with_h = Chem.AddHs(mol)
+                h_count = sum(
+                    1 for atom in mol_with_h.GetAtoms() if atom.GetSymbol() == "H"
+                )
+                if h_count != n_hydrogenes:
+                    return None
+
+            # Generate SMILES without explicit hydrogens (they will be implicit)
+            return Chem.MolToSmiles(mol)
+        except:
+            return None
+
+    def compter_valences_utilisees(graphe):
+        """Compte les valences utilisées pour chaque nœud"""
+        valences = {}
         for node in graphe.nodes:
-            idx = rw_mol.AddAtom(Chem.Atom("C"))
-            node_to_idx[node] = idx
-        for u, v in graphe.edges():
-            rw_mol.AddBond(node_to_idx[u], node_to_idx[v], Chem.BondType.SINGLE)
+            valences[node] = sum(
+                data["type_liaison"] for _, _, data in graphe.edges(node, data=True)
+            )
+        return valences
 
-        mol = rw_mol.GetMol()
-        # Sanitize the molecule to calculate implicit valences
-        Chem.SanitizeMol(mol)
-        # Chem.AddHs remplit les valences vides avec des H automatiquement
-        mol = Chem.AddHs(mol)
-        return Chem.MolToSmiles(mol)
+    def generer_structures_acycliques():
+        """Génère les structures sans cycles (arbres)"""
 
-    def explorer(graphe):
-        # CONDITION DE SORTIE :
-        # Si on a n-1 liaisons et que tout est connecté, on a un squelette valide
-        if graphe.number_of_edges() == n_carbones - 1:
-            if nx.is_connected(graphe):
-                # --- C'EST ICI QU'ON AJOUTE LE SMILES ---
-                smiles = convertir_en_smiles(graphe)
-                smiles_uniques.add(smiles)
+        def explorer_arbre(graphe):
+            # Si on a n-1 liaisons et que tout est connecté, on a un arbre valide
+            if graphe.number_of_edges() == n_carbones - 1:
+                if nx.is_connected(graphe):
+                    # Essayer différentes combinaisons de types de liaisons
+                    explorer_types_liaisons(graphe, list(graphe.edges()))
+                return
+
+            # Construire l'arbre
+            for i in range(n_carbones):
+                for j in range(i + 1, n_carbones):
+                    if not graphe.has_edge(i, j):
+                        valences = compter_valences_utilisees(graphe)
+                        if valences.get(i, 0) < 4 and valences.get(j, 0) < 4:
+                            graphe.add_edge(i, j, type_liaison=1)
+                            explorer_arbre(graphe)
+                            graphe.remove_edge(i, j)
+
+        g = nx.Graph()
+        for i in range(n_carbones):
+            g.add_node(i, element="C")
+        explorer_arbre(g)
+
+    def generer_structures_cycliques():
+        """Génère les structures avec cycles"""
+        # Calculer le degré d'insaturation pour déterminer la plage d'exploration
+        if n_hydrogenes is not None:
+            dou = calculer_insaturation(n_carbones, n_hydrogenes)
+            # Pour les molécules fortement insaturées (DoU >= 3), on a besoin d'explorer
+            # beaucoup plus de configurations incluant des systèmes polycycliques
+            # et des combinaisons complexes de liaisons multiples
+            if dou >= 3:
+                # Pour les molécules très insaturées, explorer jusqu'au maximum théorique
+                # Le max pour n nœuds avec degré max 4 est (n * 4) / 2 = 2n
+                max_edges = min(2 * n_carbones, n_carbones + dou + 5)
+            else:
+                max_edges = min(n_carbones + dou + 3, int(n_carbones * 1.5) + 2)
+        else:
+            max_edges = n_carbones + 3
+
+        # Explorer les graphes avec différents nombres d'arêtes
+        for n_edges in range(n_carbones, max_edges + 1):
+            explorer_graphes_cycliques(n_edges)
+
+    def explorer_graphes_cycliques(n_edges):
+        """Explore les graphes avec un nombre donné d'arêtes"""
+        # Utiliser une approche exhaustive pour générer tous les graphes possibles
+        # avec n_edges arêtes, en explorant toutes les combinaisons possibles
+
+        def construire_graphe(graphe, node_pairs, pair_idx):
+            """
+            Construit des graphes en essayant toutes les combinaisons d'arêtes
+            node_pairs: liste de toutes les paires possibles (i, j) avec i < j
+            pair_idx: index actuel dans node_pairs
+            """
+            n_current_edges = graphe.number_of_edges()
+
+            # Si on a le bon nombre d'arêtes, tester ce graphe
+            if n_current_edges == n_edges:
+                if nx.is_connected(graphe):
+                    # Essayer différentes combinaisons de types de liaisons
+                    explorer_types_liaisons(graphe, list(graphe.edges()))
+                return
+
+            # Si on a trop d'arêtes ou qu'on a parcouru toutes les paires, abandonner
+            if n_current_edges > n_edges or pair_idx >= len(node_pairs):
+                return
+
+            # Nombre d'arêtes restantes à ajouter
+            edges_needed = n_edges - n_current_edges
+            # Paires restantes à considérer
+            pairs_left = len(node_pairs) - pair_idx
+
+            # Si on n'a plus assez de paires pour atteindre n_edges, abandonner
+            if pairs_left < edges_needed:
+                return
+
+            i, j = node_pairs[pair_idx]
+
+            # Option 1: Ajouter cette arête si les valences le permettent
+            valences = compter_valences_utilisees(graphe)
+            if valences.get(i, 0) < 4 and valences.get(j, 0) < 4:
+                graphe.add_edge(i, j, type_liaison=1)
+                construire_graphe(graphe, node_pairs, pair_idx + 1)
+                graphe.remove_edge(i, j)
+
+            # Option 2: Ne pas ajouter cette arête
+            construire_graphe(graphe, node_pairs, pair_idx + 1)
+
+        # Générer toutes les paires possibles de nœuds
+        node_pairs = [
+            (i, j) for i in range(n_carbones) for j in range(i + 1, n_carbones)
+        ]
+
+        g = nx.Graph()
+        for i in range(n_carbones):
+            g.add_node(i, element="C")
+
+        construire_graphe(g, node_pairs, 0)
+
+    def explorer_types_liaisons(graphe, edges, edge_idx=0):
+        """Essaye différentes combinaisons de types de liaisons (simple, double, triple)"""
+        if edge_idx == len(edges):
+            # Toutes les liaisons ont été assignées, vérifier la validité
+            valences = compter_valences_utilisees(graphe)
+            if all(v <= 4 for v in valences.values()):
+                smiles = convertir_en_smiles_avec_liaisons(graphe)
+                if smiles:
+                    smiles_uniques.add(smiles)
+                    progress_tracker["count"] += 1
+                    if progress_tracker["task"] is not None:
+                        progress_tracker["progress"].update(
+                            progress_tracker["task"],
+                            completed=progress_tracker["count"],
+                        )
             return
 
-        # Logique de construction
-        for i in range(n_carbones):
-            for j in range(i + 1, n_carbones):
-                if (
-                    not graphe.has_edge(i, j)
-                    and graphe.degree(i) < 4
-                    and graphe.degree(j) < 4
-                ):
-                    graphe.add_edge(i, j)
-                    explorer(graphe)
-                    graphe.remove_edge(i, j)  # Backtrack
+        u, v = edges[edge_idx]
 
-    # Initialisation du graphe
-    g = nx.Graph()
-    for i in range(n_carbones):
-        g.add_node(i, element="C")
+        # Essayer liaison simple, double, triple
+        for bond_type in [1, 2, 3]:
+            valences = compter_valences_utilisees(graphe)
+            current_u = valences.get(u, 0)
+            current_v = valences.get(v, 0)
 
-    explorer(g)
+            # Retirer la valence actuelle de cette liaison
+            current_bond = graphe[u][v]["type_liaison"]
+            current_u -= current_bond
+            current_v -= current_bond
+
+            # Vérifier si on peut ajouter ce type de liaison
+            if current_u + bond_type <= 4 and current_v + bond_type <= 4:
+                graphe[u][v]["type_liaison"] = bond_type
+                explorer_types_liaisons(graphe, edges, edge_idx + 1)
+
+        # Restaurer la liaison simple par défaut
+        graphe[u][v]["type_liaison"] = 1
+
+    # Utiliser rich.progress pour les molécules complexes
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+    ) as progress:
+        # Estimer grossièrement le nombre de structures possibles
+        estimated_total = 10 ** min(n_carbones, 4)  # Estimation très approximative
+        task = progress.add_task(
+            "[cyan]Génération des isomères...", total=estimated_total
+        )
+        progress_tracker["progress"] = progress
+        progress_tracker["task"] = task
+
+        # Générer les structures acycliques
+        generer_structures_acycliques()
+
+        # Générer les structures cycliques si on cherche des structures insaturées
+        if n_hydrogenes is not None and n_carbones >= 3:
+            dou = calculer_insaturation(n_carbones, n_hydrogenes)
+            if dou > 0:  # S'il y a de l'insaturation, explorer les cycles
+                generer_structures_cycliques()
+
+        # Finaliser la barre de progression
+        progress.update(task, completed=estimated_total)
+
     return list(smiles_uniques)
 
 
@@ -202,12 +387,10 @@ def visualiser_molecules(liste_smiles, formule_brute, max_isomers=20):
     # Limiter le nombre d'isomères affichés
     if n_molecules > max_isomers:
         print(
-            f"⚠️  {n_molecules} isomères trouvés, affichage limité aux {max_isomers} premiers"
+            f"{n_molecules} isomères trouvés, affichage limité aux {max_isomers} premiers"
         )
         liste_smiles = liste_smiles[:max_isomers]
         n_molecules = max_isomers
-
-    print(f"\n🖼️  Génération de {n_molecules} images interactives...")
 
     # Calculer le nombre de lignes et colonnes pour la grille (2 colonnes)
     n_cols = 2
@@ -256,56 +439,68 @@ def visualiser_molecules(liste_smiles, formule_brute, max_isomers=20):
     # Stocker les données pour l'interactivité
     graph_data = []
 
-    for idx, smiles in enumerate(liste_smiles):
-        print(f"  [{idx+1}/{n_molecules}] Création de l'isomère {idx+1}...", end="\r")
-
-        row = idx // n_cols
-        col = idx % n_cols
-        ax = axes[row, col]
-
-        graphe = smiles_vers_graphe(smiles)
-
-        # Extraire les couleurs basées sur les éléments
-        couleurs = [
-            ELEMENTS_VALENCE[graphe.nodes[node]["element"]]["color"]
-            for node in graphe.nodes
-        ]
-
-        # Créer les labels avec symboles atomiques
-        labels = {node: graphe.nodes[node]["element"] for node in graphe.nodes}
-
-        # Dessiner le graphe dans le subplot
-        pos = nx.spring_layout(graphe, seed=42)
-
-        # Stocker les données pour l'interactivité
-        graph_data.append(
-            {
-                "ax": ax,
-                "graphe": graphe,
-                "pos": pos,
-                "couleurs": couleurs,
-                "labels": labels,
-                "selected_node": None,
-                "smiles": smiles,
-                "idx": idx,
-            }
+    # Utiliser rich.progress pour montrer l'avancement
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+    ) as progress:
+        task = progress.add_task(
+            "[green]Création des images interactives...", total=n_molecules
         )
 
-        nx.draw(
-            graphe,
-            pos,
-            labels=labels,
-            node_color=couleurs,
-            node_size=800,
-            font_color="white",
-            font_weight="bold",
-            with_labels=True,
-            edgecolors="black",
-            linewidths=2,
-            ax=ax,
-        )
-        ax.set_title(f"Isomère {idx+1}\n{smiles}", fontsize=10, fontweight="bold")
-        ax.axis("off")
+        for idx, smiles in enumerate(liste_smiles):
+            row = idx // n_cols
+            col = idx % n_cols
+            ax = axes[row, col]
+
+            graphe = smiles_vers_graphe(smiles)
+
+            # Extraire les couleurs basées sur les éléments
+            couleurs = [
+                ELEMENTS_VALENCE[graphe.nodes[node]["element"]]["color"]
+                for node in graphe.nodes
+            ]
+
+            # Créer les labels avec symboles atomiques
+            labels = {node: graphe.nodes[node]["element"] for node in graphe.nodes}
+
+            # Dessiner le graphe dans le subplot
+            pos = nx.spring_layout(graphe, seed=42)
+
+            # Stocker les données pour l'interactivité
+            graph_data.append(
+                {
+                    "ax": ax,
+                    "graphe": graphe,
+                    "pos": pos,
+                    "couleurs": couleurs,
+                    "labels": labels,
+                    "selected_node": None,
+                    "smiles": smiles,
+                    "idx": idx,
+                }
+            )
+
+            nx.draw(
+                graphe,
+                pos,
+                labels=labels,
+                node_color=couleurs,
+                node_size=800,
+                font_color="white",
+                font_weight="bold",
+                with_labels=True,
+                edgecolors="black",
+                linewidths=2,
+                ax=ax,
+            )
+            ax.set_title(f"Isomère {idx+1}\n{smiles}", fontsize=10, fontweight="bold")
+            ax.axis("off")
+
+            progress.update(task, advance=1)
 
     # Cacher les subplots vides
     for idx in range(n_molecules, n_rows * n_cols):
@@ -424,7 +619,7 @@ def visualiser_molecules(liste_smiles, formule_brute, max_isomers=20):
 
     canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
-    print(f"\n✅ {n_molecules} images interactives créées! Glissez-déposez les atomes!")
+    print(f"\nVisualisation créée! Glissez-déposez les atomes pour les repositionner.")
     root.mainloop()
 
 
@@ -441,19 +636,10 @@ def visualiser_molecules_3d(
     # Limiter le nombre d'isomères affichés
     if n_molecules > max_isomers:
         print(
-            f"⚠️  {n_molecules} isomères trouvés, affichage limité aux {max_isomers} premiers"
+            f"{n_molecules} isomères trouvés, affichage limité aux {max_isomers} premiers"
         )
         liste_smiles = liste_smiles[:max_isomers]
         n_molecules = max_isomers
-
-    if optimize:
-        print(
-            f"\n🔬 Génération de {n_molecules} structures 3D avec optimisation (plus lent)..."
-        )
-    else:
-        print(
-            f"\n🔬 Génération de {n_molecules} structures 3D rapide (sans optimisation)..."
-        )
 
     # Calculer le nombre de lignes et colonnes pour la grille (2 colonnes)
     n_cols = 2
@@ -491,76 +677,88 @@ def visualiser_molecules_3d(
         f"{formule_brute} - {n_molecules} Isomères (3D)", fontsize=16, fontweight="bold"
     )
 
-    for idx, smiles in enumerate(liste_smiles):
-        print(f"  [{idx+1}/{n_molecules}] Création de l'isomère {idx+1}...", end="\r")
+    # Utiliser rich.progress pour montrer l'avancement
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+    ) as progress:
+        task = progress.add_task(
+            "[magenta]Création des structures 3D...", total=n_molecules
+        )
 
-        # Créer un subplot 3D
-        ax = fig.add_subplot(n_rows, n_cols, idx + 1, projection="3d")
+        for idx, smiles in enumerate(liste_smiles):
+            # Créer un subplot 3D
+            ax = fig.add_subplot(n_rows, n_cols, idx + 1, projection="3d")
 
-        # Créer la molécule et ajouter les hydrogènes
-        mol = Chem.MolFromSmiles(smiles)
-        mol = Chem.AddHs(mol)
+            # Créer la molécule et ajouter les hydrogènes
+            mol = Chem.MolFromSmiles(smiles)
+            mol = Chem.AddHs(mol)
 
-        # Générer les coordonnées 3D
-        AllChem.EmbedMolecule(mol, randomSeed=42)  # type: ignore
+            # Générer les coordonnées 3D
+            AllChem.EmbedMolecule(mol, randomSeed=42)  # type: ignore
 
-        # Optimisation optionnelle (plus lent mais plus précis)
-        if optimize:
-            AllChem.MMFFOptimizeMolecule(mol)  # type: ignore
+            # Optimisation optionnelle (plus lent mais plus précis)
+            if optimize:
+                AllChem.MMFFOptimizeMolecule(mol)  # type: ignore
 
-        # Obtenir les coordonnées 3D
-        conf = mol.GetConformer()
+            # Obtenir les coordonnées 3D
+            conf = mol.GetConformer()
 
-        # Extraire les positions et couleurs des atomes
-        for atom in mol.GetAtoms():
-            pos = conf.GetAtomPosition(atom.GetIdx())
-            couleur = ELEMENTS_VALENCE[atom.GetSymbol()]["color"]
+            # Extraire les positions et couleurs des atomes
+            for atom in mol.GetAtoms():
+                pos = conf.GetAtomPosition(atom.GetIdx())
+                couleur = ELEMENTS_VALENCE[atom.GetSymbol()]["color"]
 
-            ax.scatter(
-                pos.x,
-                pos.y,
-                pos.z,
-                c=couleur,
-                s=500,
-                edgecolors="black",
-                linewidths=2,
-                alpha=0.9,
-            )
+                ax.scatter(
+                    pos.x,
+                    pos.y,
+                    pos.z,
+                    c=couleur,
+                    s=500,
+                    edgecolors="black",
+                    linewidths=2,
+                    alpha=0.9,
+                )
 
-            # Ajouter le label de l'atome
-            ax.text(
-                pos.x,
-                pos.y,
-                pos.z,
-                atom.GetSymbol(),
-                fontsize=10,
-                fontweight="bold",
-                ha="center",
-                va="center",
-            )
+                # Ajouter le label de l'atome
+                ax.text(
+                    pos.x,
+                    pos.y,
+                    pos.z,
+                    atom.GetSymbol(),
+                    fontsize=10,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                )
 
-        # Dessiner les liaisons
-        for bond in mol.GetBonds():
-            begin_idx = bond.GetBeginAtomIdx()
-            end_idx = bond.GetEndAtomIdx()
-            begin_pos = conf.GetAtomPosition(begin_idx)
-            end_pos = conf.GetAtomPosition(end_idx)
+            # Dessiner les liaisons
+            for bond in mol.GetBonds():
+                begin_idx = bond.GetBeginAtomIdx()
+                end_idx = bond.GetEndAtomIdx()
+                begin_pos = conf.GetAtomPosition(begin_idx)
+                end_pos = conf.GetAtomPosition(end_idx)
 
-            ax.plot(
-                [begin_pos.x, end_pos.x],
-                [begin_pos.y, end_pos.y],
-                [begin_pos.z, end_pos.z],
-                "k-",
-                linewidth=2,
-            )
+                ax.plot(
+                    [begin_pos.x, end_pos.x],
+                    [begin_pos.y, end_pos.y],
+                    [begin_pos.z, end_pos.z],
+                    "k-",
+                    linewidth=2,
+                )
 
-        ax.set_xlabel("X", fontsize=8)
-        ax.set_ylabel("Y", fontsize=8)
-        ax.set_zlabel("Z", fontsize=8)
-        ax.set_title(f"Isomère {idx+1}\n{smiles}", fontsize=10, fontweight="bold")
+            ax.set_xlabel("X", fontsize=8)
+            ax.set_ylabel("Y", fontsize=8)
+            ax.set_zlabel("Z", fontsize=8)
+            ax.set_title(f"Isomère {idx+1}\n{smiles}", fontsize=10, fontweight="bold")
 
-        # Désactiver la grille pour un meilleur rendu
-        ax.grid(True, alpha=0.3)
+            # Désactiver la grille pour un meilleur rendu
+            ax.grid(True, alpha=0.3)
+
+            progress.update(task, advance=1)
 
     plt.tight_layout()
 
@@ -579,7 +777,7 @@ def visualiser_molecules_3d(
 
     canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
-    print(f"\n✅ {n_molecules} structures 3D créées dans une fenêtre scrollable!")
+    print(f"\nVisualisation 3D créée!")
     root.mainloop()
 
 
@@ -613,9 +811,9 @@ def analyser_entree_utilisateur():
         print(f"Degré d'insaturation (DoU) : {dou}")
 
         # Générer tous les squelettes carbonés possibles
-        print(f"\nGénération des isomères pour {c}...")
-        resultats = generer_tous_squelettes(c)
-        print(f"Nombre d'isomères trouvés : {len(resultats)}")
+        print(f"\nGénération des isomères pour {formule_brute}...")
+        resultats = generer_tous_squelettes(c, h)
+        print(f"\nNombre d'isomères trouvés : {len(resultats)}")
 
         # Afficher les SMILES
         for idx, smiles in enumerate(resultats, 1):
