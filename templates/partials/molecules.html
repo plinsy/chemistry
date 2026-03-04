@@ -1,6 +1,6 @@
 <div class="molecules-container">
   <h3>
-    Found {{ isomers|length }} Isomer{{ 's' if isomers|length != 1 else '' }}
+    Found {{ isomers|length }} Isomers
   </h3>
   
   <div class="bond-legend">
@@ -32,6 +32,7 @@
     {% endfor %}
   </div>
 </div>
+
 
 <script>
   // Simple SMILES parser for basic visualization
@@ -319,8 +320,4 @@
   // Expose functions globally for HTMX compatibility
   window.initializeMolecules = initializeMolecules
   
-  const formulaInput = document.getElementById('formula')
-  if (formulaInput) {
-    formulaInput.value = {{ formula|tojson }}
-  }
 </script>
