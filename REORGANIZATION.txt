@@ -1,0 +1,151 @@
+╔══════════════════════════════════════════════════════════════╗
+║                                                              ║
+║  RUST APP MOVED TO rust/ FOLDER - REORGANIZATION COMPLETE   ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+
+✅ REORGANIZATION SUMMARY
+
+═══════════════════════════════════════════════════════════════
+📁 NEW PROJECT STRUCTURE
+═══════════════════════════════════════════════════════════════
+
+chemistry/                          # Root directory
+│
+├── 🐍 PYTHON VERSION (Flask)
+│   ├── app.py                      # Flask application
+│   ├── chemistry.py                # Chemistry logic
+│   ├── main.py                     # CLI entry point
+│   ├── pyproject.toml              # Python dependencies
+│   ├── templates/                  # Jinja2 templates (Flask-specific)
+│   │   ├── pages/
+│   │   │   └── index.html         # Uses: {{ url_for(...) }}
+│   │   └── partials/
+│   │       ├── formula.html
+│   │       ├── molecules.html     # Uses: {{ ... | tojson }}
+│   │       └── error.html
+│   └── static/                     # CSS/JS (shared with Rust)
+│       └── css/styles.css
+│
+└── 🦀 RUST VERSION (Actix-web)
+    └── rust/                       # Rust subdirectory
+        ├── src/
+        │   ├── main.rs             # Entry point
+        │   ├── chemistry.rs        # Chemistry logic
+        │   └── web.rs              # HTTP routes (updated paths)
+        ├── templates/              # Tera templates (Rust-specific)
+        │   ├── pages/
+        │   │   └── index.html     # Uses: /static/css/...
+        │   └── partials/
+        │       ├── formula.html
+        │       ├── molecules.html # Uses: {{ ... | json_encode | safe }}
+        │       └── error.html
+        ├── static/                 # CSS/JS (copied from root)
+        │   └── css/styles.css
+        ├── Cargo.toml              # Rust dependencies
+        ├── build.sh                # Build script (updated paths)
+        ├── run.sh                  # Run script (updated paths)
+        ├── compare.sh              # Comparison script (updated)
+        ├── README.md               # Quick reference
+        ├── README_RUST.md          # Complete docs
+        ├── SETUP.md                # Installation guide
+        ├── QUICKSTART.md           # Quick reference
+        ├── CONVERSION.md           # Migration notes
+        └── SUMMARY.txt             # Visual overview
+
+═══════════════════════════════════════════════════════════════
+🔧 KEY CHANGES MADE
+═══════════════════════════════════════════════════════════════
+
+1. TEMPLATES SEPARATED
+   ✓ Python templates (templates/): Use Jinja2 syntax
+     - {{ url_for('static', filename='...') }}
+     - {{ variable|tojson }}
+     - {% include 'partials/...' %}
+   
+   ✓ Rust templates (rust/templates/): Use Tera syntax
+     - /static/css/...
+     - {{ variable | json_encode | safe }}
+     - {% include "partials/..." %}
+
+2. RUST PATHS UPDATED
+   ✓ rust/src/web.rs:
+     - Templates: "rust/templates/**/*.html"
+     - Static: Files::new("/static", "rust/static")
+   
+   ✓ rust/build.sh & rust/run.sh:
+     - Added cd "$(dirname "$0")" to work from rust/ folder
+   
+   ✓ rust/compare.sh:
+     - Updated to check ../app.py for Python version
+     - Updated to check ../venv for Python venv
+
+3. DOCUMENTATION ORGANIZED
+   ✓ Root README.md: Overview of both versions
+   ✓ rust/README.md: Quick start for Rust
+   ✓ All Rust docs moved to rust/ folder
+
+═══════════════════════════════════════════════════════════════
+🚀 HOW TO RUN EACH VERSION
+═══════════════════════════════════════════════════════════════
+
+PYTHON VERSION (from root directory):
+  flask run
+  # or
+  python app.py
+  
+  → Access at http://127.0.0.1:5000
+
+RUST VERSION (from root directory):
+  cd rust
+  ./run.sh
+  # or
+  cargo run --release
+  
+  → Access at http://127.0.0.1:5000
+
+RUST VERSION (from rust/ directory):
+  ./run.sh
+  # or
+  cargo run --release
+  
+  → Access at http://127.0.0.1:5000
+
+═══════════════════════════════════════════════════════════════
+✓ TEMPLATE SYNTAX DIFFERENCES
+═══════════════════════════════════════════════════════════════
+
+Flask/Jinja2 (templates/)          Tera (rust/templates/)
+─────────────────────────────────  ──────────────────────────────
+{{ url_for(...) }}                 /static/css/...
+{{ data|tojson }}                  {{ data | json_encode | safe }}
+{% include 'file.html' %}          {% include "file.html" %}
+{{ 's' if x != 1 else '' }}        {% if x != 1 %}s{% endif %}
+
+═══════════════════════════════════════════════════════════════
+🧪 TESTING
+═══════════════════════════════════════════════════════════════
+
+Test formulas (work in both versions):
+  C4H10   → Butane (2 isomers)
+  C5H12   → Pentane (3 isomers)
+  C6H6    → Benzene (complex)
+  C7H16   → Heptane (performance test)
+
+═══════════════════════════════════════════════════════════════
+📝 NOTES
+═══════════════════════════════════════════════════════════════
+
+• Both versions run on port 5000 - stop one before starting other
+• Templates are version-specific (different syntax)
+• Static files are copied to rust/static/ (can be symlinked if preferred)
+• Both apps run from their respective directories now
+• Python: Works from root (chemistry/)
+• Rust: Works from rust/ subdirectory
+
+═══════════════════════════════════════════════════════════════
+
+Run from chemistry/:      cd rust && ./run.sh
+Run from chemistry/rust/  ./run.sh
+
+Both Python and Rust apps are now fully independent! 🎉

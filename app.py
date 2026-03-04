@@ -3,9 +3,17 @@ from flask_htmx import HTMX
 from chemistry import generer_tous_squelettes, parse_formule
 from rdkit import Chem
 from rdkit.Chem import AllChem
+from collections import OrderedDict
 
 app = Flask(__name__)
 htmx = HTMX(app)
+
+PAGE_SIZE = 20
+MAX_CACHE_ENTRIES = 50
+MAX_VIEWED_FORMULAS = 10
+
+FORMULA_CACHE = OrderedDict()
+VIEWED_FORMULAS = OrderedDict()
 
 
 def molecule_to_view_data(mol):
@@ -33,6 +41,38 @@ def molecule_to_view_data(mol):
         )
 
     return atoms_data, bonds_data
+
+
+def _remember_viewed_formula(formula):
+    VIEWED_FORMULAS[formula] = True
+    VIEWED_FORMULAS.move_to_end(formula)
+
+    while len(VIEWED_FORMULAS) > MAX_VIEWED_FORMULAS:
+        VIEWED_FORMULAS.popitem(last=False)
+
+
+def _build_isomer_payload(smiles_list):
+    isomers = []
+    for smiles in smiles_list:
+        try:
+            mol = Chem.MolFromSmiles(smiles)
+            mol = Chem.AddHs(mol)
+            AllChem.EmbedMolecule(mol, randomSeed=42)  # type: ignore
+
+            atoms_data, bonds_data = molecule_to_view_data(mol)
+
+            isomers.append({"smiles": smiles, "atoms": atoms_data, "bonds": bonds_data})
+        except Exception:
+            try:
+                fallback_mol = Chem.MolFromSmiles(smiles)
+                fallback_mol = Chem.AddHs(fallback_mol)
+                AllChem.Compute2DCoords(fallback_mol)
+                atoms_data, bonds_data = molecule_to_view_data(fallback_mol)
+                isomers.append({"smiles": smiles, "atoms": atoms_data, "bonds": bonds_data})
+            except Exception:
+                isomers.append({"smiles": smiles, "atoms": [], "bonds": []})
+
+    return isomers
 
 
 @app.route("/")
@@ -72,42 +112,59 @@ def calculate_isomers():
                 400,
             )
 
-        # Generate all isomers
-        smiles_list = generer_tous_squelettes(c, h)
+        page = request.form.get("page", "1").strip()
+        try:
+            current_page = max(1, int(page))
+        except ValueError:
+            current_page = 1
 
-        # Prepare isomers data with 3D coordinates including hydrogens
-        isomers = []
-        for smiles in smiles_list:
-            try:
-                # Convert SMILES to molecule and add explicit hydrogens
-                mol = Chem.MolFromSmiles(smiles)
-                mol = Chem.AddHs(mol)
+        is_cached = formula in FORMULA_CACHE
+        if is_cached:
+            FORMULA_CACHE.move_to_end(formula)
+            isomers = FORMULA_CACHE[formula]
+        else:
+            smiles_list = generer_tous_squelettes(c, h)
+            isomers = _build_isomer_payload(smiles_list)
+            FORMULA_CACHE[formula] = isomers
+            FORMULA_CACHE.move_to_end(formula)
 
-                # Generate 3D coordinates
-                AllChem.EmbedMolecule(mol, randomSeed=42)  # type: ignore
+            while len(FORMULA_CACHE) > MAX_CACHE_ENTRIES:
+                FORMULA_CACHE.popitem(last=False)
 
-                atoms_data, bonds_data = molecule_to_view_data(mol)
+        _remember_viewed_formula(formula)
 
-                isomers.append(
-                    {"smiles": smiles, "atoms": atoms_data, "bonds": bonds_data}
+        total_isomers = len(isomers)
+        total_pages = max(1, (total_isomers + PAGE_SIZE - 1) // PAGE_SIZE)
+        current_page = min(current_page, total_pages)
+        start_idx = (current_page - 1) * PAGE_SIZE
+        end_idx = min(start_idx + PAGE_SIZE, total_isomers)
+        paginated_isomers = isomers[start_idx:end_idx]
+
+        page_ranges = []
+        if total_isomers > 0:
+            for page_number in range(1, total_pages + 1):
+                range_start = (page_number - 1) * PAGE_SIZE + 1
+                range_end = min(page_number * PAGE_SIZE, total_isomers)
+                page_ranges.append(
+                    {
+                        "number": page_number,
+                        "start": range_start,
+                        "end": range_end,
+                    }
                 )
-            except Exception as e:
-                try:
-                    # Fallback: still provide topology with 2D coordinates
-                    fallback_mol = Chem.MolFromSmiles(smiles)
-                    fallback_mol = Chem.AddHs(fallback_mol)
-                    AllChem.Compute2DCoords(fallback_mol)
-                    atoms_data, bonds_data = molecule_to_view_data(fallback_mol)
-                    isomers.append(
-                        {"smiles": smiles, "atoms": atoms_data, "bonds": bonds_data}
-                    )
-                except Exception:
-                    # Final fallback: include SMILES only
-                    isomers.append({"smiles": smiles, "atoms": [], "bonds": []})
 
-        # Return the molecules partial with isomers data
         return render_template(
-            "partials/molecules.html", isomers=isomers, formula=formula
+            "partials/molecules.html",
+            isomers=paginated_isomers,
+            formula=formula,
+            total_isomers=total_isomers,
+            current_page=current_page,
+            total_pages=total_pages,
+            start_index=start_idx + 1 if total_isomers > 0 else 0,
+            end_index=end_idx,
+            page_ranges=page_ranges,
+            viewed_formulas=list(reversed(VIEWED_FORMULAS.keys())),
+            is_cached=is_cached,
         )
 
     except Exception as e:

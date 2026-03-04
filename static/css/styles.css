@@ -61,6 +61,76 @@ header p {
     text-align: center;
 }
 
+.result-meta {
+    text-align: center;
+    margin-bottom: 1rem;
+}
+
+.cache-status {
+    font-size: 0.85rem;
+    color: #2e7d32;
+    font-weight: normal;
+}
+
+.page-info {
+    color: #555;
+    font-size: 0.95rem;
+}
+
+.cache-list {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+}
+
+.cache-label {
+    color: #444;
+    font-weight: 600;
+}
+
+.cache-chips,
+.pagination-controls {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.pagination-controls {
+    justify-content: center;
+    margin-bottom: 1rem;
+}
+
+.cache-form,
+.pagination-form {
+    margin: 0;
+}
+
+.cache-chip,
+.page-button {
+    width: auto !important;
+    padding: 0.35rem 0.7rem !important;
+    font-size: 0.9rem !important;
+    border: 1px solid #d0d0d0 !important;
+    background: #fff !important;
+    color: #333 !important;
+    border-radius: 999px !important;
+    cursor: pointer;
+}
+
+.cache-chip:hover,
+.page-button:hover {
+    border-color: #4caf50 !important;
+    color: #2e7d32 !important;
+}
+
+.page-button.active {
+    background: #4caf50 !important;
+    color: #fff !important;
+    border-color: #4caf50 !important;
+}
+
 .bond-legend {
     display: flex;
     justify-content: center;
