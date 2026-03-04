@@ -3,7 +3,8 @@
     hx-post="/api/calculate"
     hx-target="#molecules-result"
     hx-swap="innerHTML"
-    hx-indicator="#loading">
+    hx-indicator="#loading"
+    hx-disabled-elt="find input, find button">
     <div class="input-group">
       <label for="formula">Enter Chemical Formula:</label>
       <input
@@ -15,13 +16,10 @@
         style="text-transform: uppercase"
         value="C4H4"
         required />
+        <span id="loading" class="htmx-indicator">
+          <span class="spinner"></span>
+        </span>
     </div>
-    <button type="submit">
-      View Isomers
-      <span id="loading" class="htmx-indicator">
-        <span class="spinner"></span>
-      </span>
-    </button>
   </form>
   <div id="molecules-result" class="molecules-result"></div>
 </div>

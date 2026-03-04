@@ -34,16 +34,8 @@ header p {
 }
 
 /* Loading indicator */
-.htmx-request .htmx-indicator {
-    display: inline-block;
-}
 
-.htmx-indicator {
-    display: none;
-    margin-left: 10px;
-}
-
-.htmx-request .spinner {
+.spinner {
     border: 3px solid #f3f3f3;
     border-top: 3px solid #4caf50;
     border-radius: 50%;
@@ -77,6 +69,8 @@ header p {
     padding: 1rem;
     background: #f5f5f5;
     border-radius: 8px;
+    width: fit-content;
+    margin-left: auto;
 }
 
 .legend-item {
@@ -183,7 +177,6 @@ header p {
 
 .formula-container {
     margin: 2rem auto;
-    padding: 2rem;
 }
 
 .formula-container form {
@@ -240,6 +233,9 @@ button[type='submit']:hover {
 .htmx-indicator {
     opacity: 0;
     visibility: hidden;
+    position: absolute;
+    right: 12px;
+    top: 42px;
 }
 
 .htmx-request .htmx-indicator,
@@ -247,17 +243,6 @@ button[type='submit']:hover {
     opacity: 1;
     visibility: visible;
     transition: opacity 200ms ease-in;
-}
-
-.spinner {
-    border: 2px solid #ffffff;
-    border-top: 2px solid transparent;
-    border-radius: 50%;
-    width: 16px;
-    height: 16px;
-    animation: spin 1s linear infinite;
-    vertical-align: middle;
-    margin-left: 8px;
 }
 
 @keyframes spin {
