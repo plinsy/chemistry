@@ -2,6 +2,20 @@
   <h3>
     Found {{ isomers|length }} Isomer{{ 's' if isomers|length != 1 else '' }}
   </h3>
+  <div class="bond-legend">
+    <span class="legend-item">
+      <span class="bond-example single-bond"></span>
+      Single Bond
+    </span>
+    <span class="legend-item">
+      <span class="bond-example double-bond"></span>
+      Double Bond (=)
+    </span>
+    <span class="legend-item">
+      <span class="bond-example triple-bond"></span>
+      Triple Bond (#)
+    </span>
+  </div>
   <div class="isomers-grid">
     {% for isomer in isomers %}
     <div class="isomer-card">
@@ -23,43 +37,68 @@
   function parseSMILES(smiles) {
     const atoms = []
     const bonds = []
+    const branchStack = []
+    const ringClosures = {}
     let currentIndex = 0
-    let branchStack = []
-    let lastMainChainIndex = -1
+    let currentAtomIndex = -1
+    let pendingBondType = 1
+
+    function atomFromChar(char) {
+      if (char === 'C' || char === 'O' || char === 'N' || char === 'S' || char === 'P' || char === 'H') {
+        return char
+      }
+      return null
+    }
 
     // Parse SMILES notation (hydrogens are implicit, not shown)
     for (let i = 0; i < smiles.length; i++) {
       const char = smiles[i]
+      const atomSymbol = atomFromChar(char)
 
-      // Handle atoms (C, N, O, etc.) - skip H as it's typically implicit
-      if (char === 'C' || char === 'O' || char === 'N' || char === 'S' || char === 'P') {
-        atoms.push({ element: char, index: currentIndex })
+      if (atomSymbol) {
+        // Keep hydrogens implicit in fallback view for readability
+        if (atomSymbol !== 'H') {
+          atoms.push({ element: atomSymbol, index: currentIndex })
 
-        // Create bond to previous atom
-        if (branchStack.length === 0) {
-          // Main chain: connect to previous atom in main chain
-          if (lastMainChainIndex >= 0) {
-            bonds.push([lastMainChainIndex, currentIndex])
+          if (currentAtomIndex >= 0) {
+            bonds.push({ start: currentAtomIndex, end: currentIndex, type: pendingBondType })
           }
-          lastMainChainIndex = currentIndex
-        } else {
-          // In a branch: connect to the branch point (top of stack)
-          bonds.push([branchStack[branchStack.length - 1], currentIndex])
+
+          currentAtomIndex = currentIndex
+          currentIndex++
         }
 
-        currentIndex++
       } else if (char === '(') {
-        // Start a new branch from the last main chain atom
-        branchStack.push(lastMainChainIndex)
+        branchStack.push(currentAtomIndex)
       } else if (char === ')') {
-        // End the current branch and return to main chain
-        branchStack.pop()
-      } else if (char === '=' || char === '#') {
-        // Double or triple bonds - just skip for now in visualization
-        // Could be enhanced to show different bond types
-        continue
+        if (branchStack.length > 0) {
+          currentAtomIndex = branchStack.pop()
+        }
+      } else if (char === '=') {
+        pendingBondType = 2
+      } else if (char === '#') {
+        pendingBondType = 3
+      } else if (char >= '0' && char <= '9') {
+        if (currentAtomIndex >= 0) {
+          if (ringClosures[char] === undefined) {
+            ringClosures[char] = {
+              atomIndex: currentAtomIndex,
+              bondType: pendingBondType,
+            }
+          } else {
+            const start = ringClosures[char].atomIndex
+            const type = pendingBondType !== 1 ? pendingBondType : ringClosures[char].bondType
+            bonds.push({ start, end: currentAtomIndex, type })
+            delete ringClosures[char]
+          }
+        }
       }
-      // Numbers (ring closures) and other SMILES features can be added here
+
+      if (char !== '=') {
+        if (char !== '#') {
+          pendingBondType = 1
+        }
+      }
     }
 
     return { atoms, bonds }
@@ -113,15 +152,15 @@
       atoms = parsed.atoms
       bonds = parsed.bonds
 
-      // Generate simple 3D positions
-      const angleStep = (2 * Math.PI) / atoms.length
-      const radius = Math.max(3, atoms.length * 0.5)
+      // Generate simple 3D positions with generous spacing
+      const angleStep = (2 * Math.PI) / Math.max(atoms.length, 1)
+      const radius = Math.max(12, atoms.length * 2.5)
 
       positions = atoms.map((atom, i) => {
         const angle = i * angleStep
         return {
           x: radius * Math.cos(angle),
-          y: radius * Math.sin(angle) * 0.5,
+          y: radius * Math.sin(angle) * 0.8,
           z: (Math.random() - 0.5) * 2
         }
       })
@@ -163,35 +202,72 @@
       }
     })
 
+    function createBondCylinder(startVec, endVec, radius, color) {
+      const direction = new THREE.Vector3().subVectors(endVec, startVec)
+      const length = direction.length()
+      if (length < 1e-6) return
+
+      const geometry = new THREE.CylinderGeometry(radius, radius, length, 14)
+      const material = new THREE.MeshPhongMaterial({ color, shininess: 20 })
+      const cylinder = new THREE.Mesh(geometry, material)
+
+      const midpoint = new THREE.Vector3().addVectors(startVec, endVec).multiplyScalar(0.5)
+      cylinder.position.copy(midpoint)
+
+      const yAxis = new THREE.Vector3(0, 1, 0)
+      cylinder.quaternion.setFromUnitVectors(yAxis, direction.clone().normalize())
+      scene.add(cylinder)
+    }
+
+    function drawBondSet(startPos, endPos, bondType) {
+      const direction = new THREE.Vector3().subVectors(endPos, startPos)
+      const length = direction.length()
+      if (length < 1e-6) return
+
+      const unitDirection = direction.clone().normalize()
+      const up = new THREE.Vector3(0, 1, 0)
+      const alternate = new THREE.Vector3(1, 0, 0)
+      const refAxis = Math.abs(unitDirection.dot(up)) > 0.95 ? alternate : up
+      const perp = new THREE.Vector3().crossVectors(unitDirection, refAxis).normalize()
+
+      if (bondType >= 2.5) {
+        const offsets = [-0.18, 0, 0.18]
+        offsets.forEach((offset) => {
+          const shift = perp.clone().multiplyScalar(offset)
+          createBondCylinder(
+            startPos.clone().add(shift),
+            endPos.clone().add(shift),
+            0.05,
+            0xFF6600
+          )
+        })
+      } else if (bondType >= 1.5) {
+        const offsets = [-0.12, 0.12]
+        offsets.forEach((offset) => {
+          const shift = perp.clone().multiplyScalar(offset)
+          createBondCylinder(
+            startPos.clone().add(shift),
+            endPos.clone().add(shift),
+            0.045,
+            0x000000
+          )
+        })
+      } else {
+        createBondCylinder(startPos, endPos, 0.05, 0x000000)
+      }
+    }
+
     // Create bonds
     bonds.forEach((bond) => {
       // Handle both array format [start, end] and object format {start, end, type}
       const start = Array.isArray(bond) ? bond[0] : bond.start
       const end = Array.isArray(bond) ? bond[1] : bond.end
-      
+      const bondType = Number(Array.isArray(bond) ? 1 : (bond.type || 1))
+
       if (start < positions.length && end < positions.length) {
-        const material = new THREE.LineBasicMaterial({
-          color: 0x000000,
-          linewidth: 2
-        })
-        const points = []
-        points.push(
-          new THREE.Vector3(
-            positions[start].x,
-            positions[start].y,
-            positions[start].z
-          )
-        )
-        points.push(
-          new THREE.Vector3(
-            positions[end].x,
-            positions[end].y,
-            positions[end].z
-          )
-        )
-        const geometry = new THREE.BufferGeometry().setFromPoints(points)
-        const line = new THREE.Line(geometry, material)
-        scene.add(line)
+        const startPos = new THREE.Vector3(positions[start].x, positions[start].y, positions[start].z)
+        const endPos = new THREE.Vector3(positions[end].x, positions[end].y, positions[end].z)
+        drawBondSet(startPos, endPos, bondType)
       }
     })
 
@@ -231,76 +307,14 @@
 
   function initializeMolecules() {
     document.querySelectorAll('.molecule-viewer').forEach((container) => {
-      if (!container.hasChildNodes()) {
-        const smiles = container.dataset.smiles
-        const atomsData = container.dataset.atoms ? JSON.parse(container.dataset.atoms) : []
-        const bondsData = container.dataset.bonds ? JSON.parse(container.dataset.bonds) : []
-        createMoleculeViewer(container.id, smiles, atomsData, bondsData)
-      }
+      container.innerHTML = ''
+      const smiles = container.dataset.smiles
+      const atomsData = container.dataset.atoms ? JSON.parse(container.dataset.atoms) : []
+      const bondsData = container.dataset.bonds ? JSON.parse(container.dataset.bonds) : []
+      createMoleculeViewer(container.id, smiles, atomsData, bondsData)
     })
   }
 
   // Expose functions globally for HTMX compatibility
   window.initializeMolecules = initializeMolecules
 </script>
-
-<style>
-  .molecules-container {
-    padding: 2rem;
-    background: white;
-    border-radius: 8px;
-    margin-top: 2rem;
-  }
-
-  .molecules-container h3 {
-    color: #333;
-    margin-bottom: 1.5rem;
-    text-align: center;
-  }
-
-  .isomers-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-    gap: 2rem;
-    margin-top: 1rem;
-  }
-
-  .isomer-card {
-    background: #f9f9f9;
-    border: 1px solid #ddd;
-    border-radius: 8px;
-    padding: 1rem;
-    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
-  }
-
-  .isomer-card h4 {
-    margin-top: 0;
-    color: #4caf50;
-    text-align: center;
-  }
-
-  .smiles-code {
-    font-family: 'Courier New', monospace;
-    background: #fff;
-    padding: 0.5rem;
-    border-radius: 4px;
-    margin-bottom: 1rem;
-    text-align: center;
-    font-size: 0.9rem;
-    color: #666;
-    border: 1px solid #e0e0e0;
-  }
-
-  .molecule-viewer {
-    width: 100%;
-    height: 300px;
-    border-radius: 4px;
-    overflow: hidden;
-    background: #ffffff;
-    border: 1px solid #e0e0e0;
-  }
-
-  .molecule-viewer canvas {
-    display: block;
-  }
-</style>

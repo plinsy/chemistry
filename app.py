@@ -8,6 +8,33 @@ app = Flask(__name__)
 htmx = HTMX(app)
 
 
+def molecule_to_view_data(mol):
+    conf = mol.GetConformer()
+    atoms_data = []
+    for atom in mol.GetAtoms():
+        pos = conf.GetAtomPosition(atom.GetIdx())
+        atoms_data.append(
+            {
+                "element": atom.GetSymbol(),
+                "x": pos.x,
+                "y": pos.y,
+                "z": pos.z,
+            }
+        )
+
+    bonds_data = []
+    for bond in mol.GetBonds():
+        bonds_data.append(
+            {
+                "start": bond.GetBeginAtomIdx(),
+                "end": bond.GetEndAtomIdx(),
+                "type": float(bond.GetBondTypeAsDouble()),
+            }
+        )
+
+    return atoms_data, bonds_data
+
+
 @app.route("/")
 def home():
     if htmx:
@@ -59,37 +86,24 @@ def calculate_isomers():
                 # Generate 3D coordinates
                 AllChem.EmbedMolecule(mol, randomSeed=42)  # type: ignore
 
-                # Extract atom positions and types
-                conf = mol.GetConformer()
-                atoms_data = []
-                for atom in mol.GetAtoms():
-                    pos = conf.GetAtomPosition(atom.GetIdx())
-                    atoms_data.append(
-                        {
-                            "element": atom.GetSymbol(),
-                            "x": pos.x,
-                            "y": pos.y,
-                            "z": pos.z,
-                        }
-                    )
-
-                # Extract bonds
-                bonds_data = []
-                for bond in mol.GetBonds():
-                    bonds_data.append(
-                        {
-                            "start": bond.GetBeginAtomIdx(),
-                            "end": bond.GetEndAtomIdx(),
-                            "type": int(bond.GetBondTypeAsDouble()),
-                        }
-                    )
+                atoms_data, bonds_data = molecule_to_view_data(mol)
 
                 isomers.append(
                     {"smiles": smiles, "atoms": atoms_data, "bonds": bonds_data}
                 )
             except Exception as e:
-                # If 3D embedding fails, just include SMILES
-                isomers.append({"smiles": smiles, "atoms": [], "bonds": []})
+                try:
+                    # Fallback: still provide topology with 2D coordinates
+                    fallback_mol = Chem.MolFromSmiles(smiles)
+                    fallback_mol = Chem.AddHs(fallback_mol)
+                    AllChem.Compute2DCoords(fallback_mol)
+                    atoms_data, bonds_data = molecule_to_view_data(fallback_mol)
+                    isomers.append(
+                        {"smiles": smiles, "atoms": atoms_data, "bonds": bonds_data}
+                    )
+                except Exception:
+                    # Final fallback: include SMILES only
+                    isomers.append({"smiles": smiles, "atoms": [], "bonds": []})
 
         # Return the molecules partial with isomers data
         return render_template(
