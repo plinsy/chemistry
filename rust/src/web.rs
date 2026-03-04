@@ -1,19 +1,37 @@
 use actix_files::Files;
 use actix_web::{web, HttpResponse, Result};
-use serde::{Deserialize};
+use serde::{Deserialize, Serialize};
 use tera::{Context, Tera};
 
-use crate::chemistry::{generate_all_skeletons, generate_3d_coords, parse_formula, Bond, Isomer};
+use crate::chemistry::{molecule_to_smiles, parse_formule, Generator};
 
 #[derive(Deserialize)]
 pub struct FormulaRequest {
     formula: String,
 }
 
-// #[derive(Serialize)]
-// pub struct ErrorResponse {
-//     error: String,
-// }
+#[derive(Serialize)]
+pub struct AtomView {
+    pub index: usize,
+    pub element: String,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+#[derive(Serialize)]
+pub struct BondView {
+    pub start: usize,
+    pub end: usize,
+    pub bond_type: u8,
+}
+
+#[derive(Serialize)]
+pub struct IsomerView {
+    pub smiles: String,
+    pub atoms: Vec<AtomView>,
+    pub bonds: Vec<BondView>,
+}
 
 lazy_static::lazy_static! {
     pub static ref TEMPLATES: Tera = {
@@ -49,41 +67,59 @@ async fn calculate_isomers(form: web::Form<FormulaRequest>) -> Result<HttpRespon
         return render_error("Please enter a chemical formula");
     }
 
-    // Parse the formula
-    let atoms = match parse_formula(&formula) {
-        Ok(a) => a,
-        Err(e) => return render_error(&format!("Invalid formula: {}", e)),
-    };
+    let (c, h) = parse_formule(&formula);
 
-    // Extract carbon and hydrogen counts
-    let c = *atoms.get("C").unwrap_or(&0);
-    let h = *atoms.get("H").unwrap_or(&0);
-
-    if c == 0 {
+    if c <= 0 {
         return render_error("Formula must contain carbon atoms");
     }
 
-    // Generate all isomers
-    let smiles_list = generate_all_skeletons(c, Some(h));
+    // Generate all isomers using the backtracking generator from chemistry.rs
+    let mut generator = Generator::new(c as usize, h as usize);
+    generator.run();
 
-    // Prepare isomers data
-    let mut isomers = Vec::new();
-    for smiles in smiles_list {
-        // Generate simplified 3D coordinates
-        let num_carbons = smiles.chars().filter(|&c| c == 'C').count();
-        let atoms_data = generate_3d_coords(num_carbons);
-        
-        // Generate bonds from structure
-        let bonds_data = generate_bonds_from_smiles(&smiles);
+    let isomers: Vec<IsomerView> = generator
+        .results
+        .into_iter()
+        .map(|mol| {
+            let n = mol.n_atoms;
+            let smiles = molecule_to_smiles(&mol);
 
-        isomers.push(Isomer {
-            smiles: smiles.clone(),
-            atoms: atoms_data,
-            bonds: bonds_data,
-        });
-    }
+            // Simple circular layout for atom positions
+            let atoms = (0..n)
+                .map(|i| {
+                    let angle = 2.0 * std::f32::consts::PI * i as f32 / n as f32;
+                    let radius = 1.5 * (n as f32).sqrt();
+                    AtomView {
+                        index: i,
+                        element: "C".to_string(),
+                        x: radius * angle.cos(),
+                        y: radius * angle.sin(),
+                        z: 0.0,
+                    }
+                })
+                .collect();
 
-    // Render the molecules partial
+            // Bonds from the upper triangle of the adjacency matrix
+            let bonds = mol
+                .adj_matrix
+                .iter()
+                .enumerate()
+                .flat_map(|(i, row)| {
+                    row.iter()
+                        .enumerate()
+                        .filter(move |&(j, &b)| j > i && b > 0)
+                        .map(move |(j, &b)| BondView {
+                            start: i,
+                            end: j,
+                            bond_type: b,
+                        })
+                })
+                .collect();
+
+            IsomerView { smiles, atoms, bonds }
+        })
+        .collect();
+
     let mut context = Context::new();
     context.insert("isomers", &isomers);
     context.insert("formula", &formula);
@@ -108,44 +144,5 @@ fn render_error(error: &str) -> Result<HttpResponse> {
         .body(body))
 }
 
-fn generate_bonds_from_smiles(smiles: &str) -> Vec<Bond> {
-    let mut bonds = Vec::new();
-    let mut current_idx = 0usize;
-    let mut parent_stack = Vec::new();
-    let mut next_bond_type = 1.0;
 
-    for ch in smiles.chars() {
-        match ch {
-            'C' => {
-                if let Some(&parent_idx) = parent_stack.last() {
-                    bonds.push(Bond {
-                        start: parent_idx,
-                        end: current_idx,
-                        bond_type: next_bond_type,
-                    });
-                    next_bond_type = 1.0;
-                }
-                parent_stack.push(current_idx);
-                current_idx += 1;
-            }
-            '(' => {
-                // Branch start - keep current parent
-            }
-            ')' => {
-                // Branch end - pop to previous parent
-                if parent_stack.len() > 1 {
-                    parent_stack.pop();
-                }
-            }
-            '=' => {
-                next_bond_type = 2.0;
-            }
-            '#' => {
-                next_bond_type = 3.0;
-            }
-            _ => {}
-        }
-    }
 
-    bonds
-}

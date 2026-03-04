@@ -1,368 +1,198 @@
-use petgraph::graph::{Graph, NodeIndex};
-use petgraph::Undirected;
+use eframe::egui;
+use petgraph::graph::Graph;
+use petgraph::algo::connected_components;
 use regex::Regex;
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Atom {
-    pub element: String,
-    pub x: f64,
-    pub y: f64,
-    pub z: f64,
+// --- LOGIQUE CHIMIQUE ---
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Molecule {
+    pub adj_matrix: Vec<Vec<u8>>, // 0: pas de lien, 1: simple, 2: double, 3: triple
+    pub n_atoms: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Bond {
-    pub start: usize,
-    pub end: usize,
-    #[serde(rename = "type")]
-    pub bond_type: f64,
+pub fn calculer_insaturation(c: i32, h: i32) -> i32 {
+    (2 * c + 2 - h) / 2
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Isomer {
-    pub smiles: String,
-    pub atoms: Vec<Atom>,
-    pub bonds: Vec<Bond>,
-}
-
-type MolGraph = Graph<String, u8, Undirected>;
-
-/// Parse a chemical formula like "C4H10" into a hashmap of element counts
-pub fn parse_formula(formula: &str) -> Result<HashMap<String, usize>, String> {
+pub fn parse_formule(formule: &str) -> (i32, i32) {
     let re = Regex::new(r"([A-Z][a-z]?)(\d*)").unwrap();
-    let mut atoms = HashMap::new();
+    let mut c = 0;
+    let mut h = 0;
 
-    for cap in re.captures_iter(formula) {
-        let symbol = cap[1].to_string();
-        let count = if cap[2].is_empty() {
-            1
+    for cap in re.captures_iter(formule) {
+        let sym = &cap[1];
+        let qty = cap[2].parse::<i32>().unwrap_or(1);
+        if sym == "C" { c = qty; }
+        else if sym == "H" { h = qty; }
+    }
+    (c, h)
+}
+
+// --- GÉNÉRATEUR D'ISOMÈRES (BACKTRACKING OPTIMISÉ) ---
+
+pub struct Generator {
+    pub n_carbons: usize,
+    pub n_hydrogens: usize,
+    pub results: HashSet<Molecule>,
+}
+
+impl Generator {
+    pub fn new(c: usize, h: usize) -> Self {
+        Self { n_carbons: c, n_hydrogens: h, results: HashSet::new() }
+    }
+
+    pub fn run(&mut self) {
+        let mut matrix = vec![vec![0u8; self.n_carbons]; self.n_carbons];
+        self.backtrack(&mut matrix, 0, 1);
+    }
+
+    fn backtrack(&mut self, matrix: &mut Vec<Vec<u8>>, row: usize, col: usize) {
+        if row == self.n_carbons - 1 {
+            if self.is_valid(matrix) {
+                self.results.insert(Molecule { adj_matrix: matrix.clone(), n_atoms: self.n_carbons });
+            }
+            return;
+        }
+
+        let (next_row, next_col) = if col == self.n_carbons - 1 {
+            (row + 1, row + 2)
         } else {
-            cap[2].parse::<usize>().map_err(|e| e.to_string())?
+            (row, col + 1)
         };
 
-        *atoms.entry(symbol).or_insert(0) += count;
-    }
-
-    Ok(atoms)
-}
-
-/// Calculate the degree of unsaturation (DoU)
-pub fn calculate_unsaturation(carbon: usize, hydrogen: usize, nitrogen: usize, halogen: usize) -> i32 {
-    ((2 * carbon + 2 + nitrogen) as i32 - hydrogen as i32 - halogen as i32) / 2
-}
-
-/// Generate all possible isomers for a given molecular formula
-pub fn generate_all_skeletons(n_carbons: usize, n_hydrogens: Option<usize>) -> Vec<String> {
-    let mut smiles_unique = HashSet::new();
-
-    // Generate acyclic structures (trees)
-    generate_acyclic_structures(n_carbons, n_hydrogens, &mut smiles_unique);
-
-    // Generate cyclic structures if there's unsaturation
-    if let Some(h) = n_hydrogens {
-        if n_carbons >= 3 {
-            let dou = calculate_unsaturation(n_carbons, h, 0, 0);
-            if dou > 0 {
-                generate_cyclic_structures(n_carbons, n_hydrogens, &mut smiles_unique);
+        // Essayer 0 (pas de liaison), 1 (simple), 2 (double), 3 (triple)
+        for bond in 0..=3 {
+            if self.can_add_bond(matrix, row, col, bond) {
+                matrix[row][col] = bond;
+                matrix[col][row] = bond;
+                self.backtrack(matrix, next_row, next_col);
+                matrix[row][col] = 0;
+                matrix[col][row] = 0;
             }
         }
     }
 
-    smiles_unique.into_iter().collect()
-}
-
-fn generate_acyclic_structures(
-    n_carbons: usize,
-    n_hydrogens: Option<usize>,
-    smiles_set: &mut HashSet<String>,
-) {
-    if n_carbons == 0 {
-        return;
+    fn can_add_bond(&self, matrix: &[Vec<u8>], r: usize, c: usize, bond: u8) -> bool {
+        let sum_r: u8 = matrix[r].iter().sum::<u8>() + bond;
+        let sum_c: u8 = matrix[c].iter().sum::<u8>() + bond;
+        sum_r <= 4 && sum_c <= 4
     }
 
-    let mut graph = Graph::<String, u8, Undirected>::new_undirected();
-    let nodes: Vec<NodeIndex> = (0..n_carbons)
-        .map(|_| graph.add_node("C".to_string()))
+    fn is_valid(&self, matrix: &[Vec<u8>]) -> bool {
+        // Vérifier la connectivité
+        let mut g = Graph::<usize, u8, petgraph::Undirected>::new_undirected();
+        let nodes: Vec<_> = (0..self.n_carbons).map(|i| g.add_node(i)).collect();
+        for i in 0..self.n_carbons {
+            for j in i + 1..self.n_carbons {
+                if matrix[i][j] > 0 { g.add_edge(nodes[i], nodes[j], matrix[i][j]); }
+            }
+        }
+        
+        if connected_components(&g) != 1 { return false; }
+
+        // Vérifier le nombre d'hydrogènes : H = sum(4 - valence_carbone)
+        let mut total_h = 0;
+        for i in 0..self.n_carbons {
+            let valence: u8 = matrix[i].iter().sum();
+            total_h += 4 - valence as i32;
+        }
+        total_h == self.n_hydrogens as i32
+    }
+}
+
+// --- SMILES GENERATOR ---
+
+/// Convert an adjacency matrix molecule to a SMILES string via DFS.
+pub fn molecule_to_smiles(mol: &Molecule) -> String {
+    let n = mol.n_atoms;
+    if n == 0 {
+        return String::new();
+    }
+    let mut visited = vec![false; n];
+    let mut out = String::new();
+    smiles_dfs(&mol.adj_matrix, 0, n, &mut visited, &mut out);
+    out
+}
+
+fn smiles_dfs(
+    matrix: &[Vec<u8>],
+    node: usize,
+    n: usize,
+    visited: &mut Vec<bool>,
+    out: &mut String,
+) {
+    visited[node] = true;
+    out.push('C');
+
+    let neighbors: Vec<(usize, u8)> = (0..n)
+        .filter(|&j| matrix[node][j] > 0 && !visited[j])
+        .map(|j| (j, matrix[node][j]))
         .collect();
 
-    explore_tree(&mut graph, &nodes, n_carbons - 1, n_hydrogens, smiles_set);
+    for (i, &(next, bond)) in neighbors.iter().enumerate() {
+        let is_last = i == neighbors.len() - 1;
+        if !is_last {
+            out.push('(');
+        }
+        match bond {
+            2 => out.push('='),
+            3 => out.push('#'),
+            _ => {}
+        }
+        smiles_dfs(matrix, next, n, visited, out);
+        if !is_last {
+            out.push(')');
+        }
+    }
 }
 
-fn explore_tree(
-    graph: &mut MolGraph,
-    nodes: &[NodeIndex],
-    target_edges: usize,
-    n_hydrogens: Option<usize>,
-    smiles_set: &mut HashSet<String>,
-) {
-    if graph.edge_count() == target_edges {
-        if is_connected(graph) {
-            explore_bond_types(graph, n_hydrogens, smiles_set);
-        }
-        return;
-    }
+// --- INTERFACE GRAPHIQUE (EGUI) ---
 
-    let n = nodes.len();
-    for i in 0..n {
-        for j in (i + 1)..n {
-            if !graph.contains_edge(nodes[i], nodes[j]) {
-                let valences = count_valences(graph, nodes);
-                if valences[i] < 4 && valences[j] < 4 {
-                    graph.add_edge(nodes[i], nodes[j], 1);
-                    explore_tree(graph, nodes, target_edges, n_hydrogens, smiles_set);
-                    if let Some(edge) = graph.find_edge(nodes[i], nodes[j]) {
-                        graph.remove_edge(edge);
-                    }
+struct MyApp {
+    input: String,
+    isomers: Vec<Molecule>,
+    searching: bool,
+}
+
+impl Default for MyApp {
+    fn default() -> Self {
+        Self { input: "C4H10".to_owned(), isomers: vec![], searching: false }
+    }
+}
+
+impl eframe::App for MyApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("Générateur d'Isomères Rust");
+            ui.horizontal(|ui| {
+                ui.label("Formule:");
+                ui.text_edit_singleline(&mut self.input);
+                if ui.button("Générer").clicked() {
+                    let (c, h) = parse_formule(&self.input);
+                    let mut generator = Generator::new(c as usize, h as usize);
+                    generator.run();
+                    self.isomers = generator.results.into_iter().collect();
                 }
-            }
-        }
-    }
-}
+            });
 
-fn generate_cyclic_structures(
-    n_carbons: usize,
-    n_hydrogens: Option<usize>,
-    smiles_set: &mut HashSet<String>,
-) {
-    if let Some(h) = n_hydrogens {
-        let dou = calculate_unsaturation(n_carbons, h, 0, 0);
-        let max_edges = if dou >= 3 {
-            (2 * n_carbons).min(n_carbons + dou as usize + 5)
-        } else {
-            ((n_carbons * 3) / 2 + 2).min(n_carbons + dou as usize + 3)
-        };
+            ui.separator();
 
-        for n_edges in n_carbons..=max_edges {
-            explore_cyclic_graphs(n_carbons, n_edges, n_hydrogens, smiles_set);
-        }
-    }
-}
-
-fn explore_cyclic_graphs(
-    n_carbons: usize,
-    n_edges: usize,
-    n_hydrogens: Option<usize>,
-    smiles_set: &mut HashSet<String>,
-) {
-    let mut graph = Graph::<String, u8, Undirected>::new_undirected();
-    let nodes: Vec<NodeIndex> = (0..n_carbons)
-        .map(|_| graph.add_node("C".to_string()))
-        .collect();
-
-    let mut node_pairs = Vec::new();
-    for i in 0..n_carbons {
-        for j in (i + 1)..n_carbons {
-            node_pairs.push((nodes[i], nodes[j]));
-        }
-    }
-
-    build_graph(&mut graph, &nodes, &node_pairs, 0, n_edges, n_hydrogens, smiles_set);
-}
-
-fn build_graph(
-    graph: &mut MolGraph,
-    nodes: &[NodeIndex],
-    node_pairs: &[(NodeIndex, NodeIndex)],
-    pair_idx: usize,
-    target_edges: usize,
-    n_hydrogens: Option<usize>,
-    smiles_set: &mut HashSet<String>,
-) {
-    let current_edges = graph.edge_count();
-
-    if current_edges == target_edges {
-        if is_connected(graph) {
-            explore_bond_types(graph, n_hydrogens, smiles_set);
-        }
-        return;
-    }
-
-    if current_edges > target_edges || pair_idx >= node_pairs.len() {
-        return;
-    }
-
-    let edges_needed = target_edges - current_edges;
-    let pairs_left = node_pairs.len() - pair_idx;
-
-    if pairs_left < edges_needed {
-        return;
-    }
-
-    let (i, j) = node_pairs[pair_idx];
-
-    // Option 1: Add this edge
-    let valences = count_valences(graph, nodes);
-    let i_idx = nodes.iter().position(|&n| n == i).unwrap();
-    let j_idx = nodes.iter().position(|&n| n == j).unwrap();
-
-    if valences[i_idx] < 4 && valences[j_idx] < 4 {
-        graph.add_edge(i, j, 1);
-        build_graph(graph, nodes, node_pairs, pair_idx + 1, target_edges, n_hydrogens, smiles_set);
-        if let Some(edge) = graph.find_edge(i, j) {
-            graph.remove_edge(edge);
-        }
-    }
-
-    // Option 2: Don't add this edge
-    build_graph(graph, nodes, node_pairs, pair_idx + 1, target_edges, n_hydrogens, smiles_set);
-}
-
-fn explore_bond_types(
-    graph: &mut MolGraph,
-    n_hydrogens: Option<usize>,
-    smiles_set: &mut HashSet<String>,
-) {
-    let edges: Vec<_> = graph.edge_indices().collect();
-    explore_bond_types_recursive(graph, &edges, 0, n_hydrogens, smiles_set);
-}
-
-fn explore_bond_types_recursive(
-    graph: &mut MolGraph,
-    edges: &[petgraph::graph::EdgeIndex],
-    edge_idx: usize,
-    n_hydrogens: Option<usize>,
-    smiles_set: &mut HashSet<String>,
-) {
-    if edge_idx == edges.len() {
-        // Check if all valences are valid
-        let nodes: Vec<_> = graph.node_indices().collect();
-        let valences = count_valences(graph, &nodes);
-        if valences.iter().all(|&v| v <= 4) {
-            if let Some(smiles) = graph_to_smiles(graph, n_hydrogens) {
-                smiles_set.insert(smiles);
-            }
-        }
-        return;
-    }
-
-    let edge = edges[edge_idx];
-    let (u, v) = graph.edge_endpoints(edge).unwrap();
-    let nodes: Vec<_> = graph.node_indices().collect();
-
-    // Try bond types 1, 2, 3
-    for bond_type in [1u8, 2u8, 3u8] {
-        let valences = count_valences(graph, &nodes);
-        let u_idx = nodes.iter().position(|&n| n == u).unwrap();
-        let v_idx = nodes.iter().position(|&n| n == v).unwrap();
-
-        let current_bond = *graph.edge_weight(edge).unwrap();
-        let current_u = valences[u_idx] - current_bond as usize;
-        let current_v = valences[v_idx] - current_bond as usize;
-
-        if current_u + bond_type as usize <= 4 && current_v + bond_type as usize <= 4 {
-            *graph.edge_weight_mut(edge).unwrap() = bond_type;
-            explore_bond_types_recursive(graph, edges, edge_idx + 1, n_hydrogens, smiles_set);
-        }
-    }
-
-    // Restore default
-    *graph.edge_weight_mut(edge).unwrap() = 1;
-}
-
-fn count_valences(graph: &MolGraph, nodes: &[NodeIndex]) -> Vec<usize> {
-    nodes
-        .iter()
-        .map(|&node| {
-            graph
-                .edges(node)
-                .map(|e| *e.weight() as usize)
-                .sum::<usize>()
-        })
-        .collect()
-}
-
-fn is_connected(graph: &MolGraph) -> bool {
-    if graph.node_count() == 0 {
-        return true;
-    }
-    
-    use petgraph::visit::Dfs;
-    let start = graph.node_indices().next().unwrap();
-    let mut dfs = Dfs::new(&*graph, start);
-    let mut count = 0;
-    
-    while dfs.next(&*graph).is_some() {
-        count += 1;
-    }
-    
-    count == graph.node_count()
-}
-
-fn graph_to_smiles(graph: &MolGraph, n_hydrogens: Option<usize>) -> Option<String> {
-    // Simplified SMILES generation
-    // In a real implementation, you would use a proper chemistry library
-    // Here we create a basic SMILES representation
-    
-    if graph.node_count() == 0 {
-        return None;
-    }
-
-    let mut smiles = String::new();
-    let mut visited = HashSet::new();
-    let start = graph.node_indices().next().unwrap();
-
-    dfs_smiles(graph, start, None, &mut visited, &mut smiles, n_hydrogens);
-
-    Some(smiles)
-}
-
-fn dfs_smiles(
-    graph: &MolGraph,
-    node: NodeIndex,
-    parent: Option<NodeIndex>,
-    visited: &mut HashSet<NodeIndex>,
-    smiles: &mut String,
-    _n_hydrogens: Option<usize>,
-) {
-    visited.insert(node);
-    smiles.push('C');
-
-    let mut neighbors: Vec<_> = graph.neighbors(node).collect();
-    neighbors.retain(|&n| Some(n) != parent);
-
-    let mut first = true;
-    for neighbor in neighbors {
-        if !visited.contains(&neighbor) {
-            if !first {
-                smiles.push('(');
-            }
-
-            // Add bond notation if not single
-            if let Some(edge) = graph.find_edge(node, neighbor) {
-                let bond_type = *graph.edge_weight(edge).unwrap();
-                match bond_type {
-                    2 => smiles.push('='),
-                    3 => smiles.push('#'),
-                    _ => {}
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for (idx, mol) in self.isomers.iter().enumerate() {
+                    ui.group(|ui| {
+                        ui.label(format!("Isomère #{}", idx + 1));
+                        // Ici, on pourrait dessiner avec egui::Painter
+                        ui.label(format!("Matrice d'adjacence: {:?}", mol.adj_matrix));
+                    });
                 }
-            }
-
-            dfs_smiles(graph, neighbor, Some(node), visited, smiles, _n_hydrogens);
-
-            if !first {
-                smiles.push(')');
-            }
-            first = false;
-        }
+            });
+        });
     }
 }
 
-/// Generate 3D coordinates for visualization (simplified)
-pub fn generate_3d_coords(n_atoms: usize) -> Vec<Atom> {
-    use std::f64::consts::PI;
-    
-    (0..n_atoms)
-        .map(|i| {
-            let angle = 2.0 * PI * (i as f64) / (n_atoms as f64);
-            let radius = 2.0;
-            Atom {
-                element: "C".to_string(),
-                x: radius * angle.cos(),
-                y: radius * angle.sin(),
-                z: 0.0,
-            }
-        })
-        .collect()
+fn main() -> eframe::Result<()> {
+    let native_options = eframe::NativeOptions::default();
+    eframe::run_native("Molecule Isomer Visualizer", native_options, Box::new(|_| Ok(Box::new(MyApp::default()))))
 }
