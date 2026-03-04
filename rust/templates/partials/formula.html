@@ -1,0 +1,25 @@
+<div class="formula-container">
+  <form
+    hx-post="/api/calculate"
+    hx-target="#molecules-result"
+    hx-swap="innerHTML"
+    hx-indicator="#loading"
+    hx-disabled-elt="find input, find button">
+    <div class="input-group">
+      <label for="formula">Enter Chemical Formula:</label>
+      <input
+        type="text"
+        id="formula"
+        name="formula"
+        placeholder="C4H4"
+        autocomplete="off"
+        style="text-transform: uppercase"
+        value="C4H4"
+        required />
+        <span id="loading" class="htmx-indicator">
+          <span class="spinner"></span>
+        </span>
+    </div>
+  </form>
+  <div id="molecules-result" class="molecules-result"></div>
+</div>

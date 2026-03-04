@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chemistry - Molecular Isomer Calculator</title>
+
+    <link rel="stylesheet" href="/static/css/styles.css" />
+
+    <!-- HTMX -->
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+
+    <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+    <script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <script>
+      // Color mapping for atoms (CPK coloring)
+      const atomColors = {
+        C: 0x909090, // Carbon - Gray
+        H: 0xffffff, // Hydrogen - White
+        O: 0xff0d0d, // Oxygen - Red
+        N: 0x3050f8, // Nitrogen - Blue
+        S: 0xffff30, // Sulfur - Yellow
+        P: 0xff8000, // Phosphorus - Orange
+      };
+
+      const atomRadii = {
+        C: 0.45,
+        H: 0.2, // Smaller for hydrogen
+        O: 0.44,
+        N: 0.43,
+        S: 0.65,
+        P: 0.65,
+      };
+    </script>
+  </head>
+
+  <body>
+    <div class="container">
+      <div class="content">{% include "partials/formula.html" %}</div>
+    </div>
+  </body>
+</html>
